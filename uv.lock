@@ -49,7 +49,7 @@ wheels = [
 
 [[package]]
 name = "bioio-imzml"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "bioio-base" },
@@ -63,13 +63,9 @@ dependencies = [
     { name = "xarray", version = "2026.7.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
 
-[package.optional-dependencies]
-test = [
-    { name = "pytest" },
-]
-
 [package.dev-dependencies]
 dev = [
+    { name = "pytest" },
     { name = "ruff" },
     { name = "ty" },
 ]
@@ -81,13 +77,12 @@ requires-dist = [
     { name = "fsspec", specifier = ">=2024.1.0" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "pyimzml", specifier = ">=1.5.5" },
-    { name = "pytest", marker = "extra == 'test'", specifier = ">=7.0" },
     { name = "xarray", specifier = ">=2024.1.0" },
 ]
-provides-extras = ["test"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "pytest", specifier = ">=7.0" },
     { name = "ruff", specifier = ">=0.16.2" },
     { name = "ty", specifier = ">=0.0.71" },
 ]

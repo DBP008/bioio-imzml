@@ -29,7 +29,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - run: uv run --python ${{ matrix.python-version }} --extra test pytest
+      - run: uv run --python ${{ matrix.python-version }} pytest
 
   publish:
     needs: [lint, test]

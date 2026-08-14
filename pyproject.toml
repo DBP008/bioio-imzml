@@ -33,9 +33,6 @@ Homepage = "https://github.com/DBP008/bioio-imzml"
 Repository = "https://github.com/DBP008/bioio-imzml"
 Issues = "https://github.com/DBP008/bioio-imzml/issues"
 
-[project.optional-dependencies]
-test = ["pytest>=7.0"]
-
 [project.entry-points."bioio.readers"]
 bioio-imzml = "bioio_imzml"
 
@@ -50,6 +47,7 @@ packages = ["bioio_imzml"]
 dev = [
     "ruff>=0.16.2",
     "ty>=0.0.71",
+    "pytest>=7.0",
 ]
 
 [tool.ruff]
