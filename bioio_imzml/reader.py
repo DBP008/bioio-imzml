@@ -5,7 +5,7 @@ import dask.array as da
 import numpy as np
 import xarray as xr
 from bioio_base import constants, dimensions, exceptions, io, reader, transforms, types
-from dask import delayed
+from dask.delayed import delayed
 from fsspec.spec import AbstractFileSystem
 from pyimzml.ImzMLParser import ImzMLParser, PortableSpectrumReader
 
