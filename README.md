@@ -4,7 +4,7 @@
 [![PyPI](https://img.shields.io/pypi/v/bioio-imzml.svg)](https://pypi.org/project/bioio-imzml)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
 
-A [BioIO](https://github.com/bioio-devs/bioio) reader plugin for imzML mass
+A *basic* [BioIO](https://github.com/bioio-devs/bioio) reader plugin for imzML mass
 spectrometry imaging (MSI) data, read with
 [pyimzML](https://github.com/alexandrovteam/pyimzML).
 
