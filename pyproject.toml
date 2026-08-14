@@ -1,0 +1,60 @@
+[project]
+name = "bioio-imzml"
+version = "0.1.0"
+description = "BioIO reader plugin for imzML mass spectrometry imaging (MSI) data."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "BSD-3-Clause" }
+authors = [{ name = "Davide Panzeri", email = "davide.panzeri12@gmail.com" }]
+keywords = ["bioio", "imzml", "mass spectrometry imaging", "msi"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "bioio-base>=3.5.0",
+    "dask>=2024.1.0",
+    "fsspec>=2024.1.0",
+    "numpy>=1.24",
+    "pyimzml>=1.5.5",
+    "xarray>=2024.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/DBP008/bioio-imzml"
+Repository = "https://github.com/DBP008/bioio-imzml"
+Issues = "https://github.com/DBP008/bioio-imzml/issues"
+
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+
+[project.entry-points."bioio.readers"]
+bioio-imzml = "bioio_imzml"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["bioio_imzml"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.2",
+    "ty>=0.0.71",
+]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
