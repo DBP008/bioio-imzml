@@ -64,6 +64,32 @@ reader = Reader("sample.imzML", n_bins=512)
 reader = Reader("sample.imzML", mz_step=0.1)
 ```
 
+## Auto peak-picking
+
+Don't know which m/z channels a file actually has signal at? `auto_pick_peaks`
+finds candidate peaks on the file's mean spectrum, then drops candidates that
+are too rare across pixels or spatially unstructured (noise/matrix artifacts
+rather than real signal):
+
+```python
+from bioio_imzml import Reader, auto_pick_peaks
+
+result = auto_pick_peaks("sample.imzML", min_mz=650, max_mz=850)
+result.mzs  # candidate m/z values, sorted by descending intensity
+result.pixel_frequency  # fraction of pixels with signal, one per mz
+result.spatial_chaos  # 0 (structured) .. 1 (spatially random), one per mz
+
+reader = Reader("sample.imzML", mz=result.mzs)
+```
+
+Tune detection sensitivity (`snr_threshold`, `min_relative_intensity`,
+`min_separation_mz`) and the quality filters (`min_pixel_frequency`,
+`max_spatial_chaos`) as keyword arguments; see the docstring for defaults.
+`bioio_imzml.peak_picking` also exposes the individual steps --
+`mean_spectrum`, `find_peaks_in_spectrum`, and
+`pixel_frequency_and_spatial_chaos` -- to inspect intermediate results or why
+a candidate was dropped before committing to thresholds.
+
 ## Continuous vs. processed mode
 
 imzML stores spectra in one of two ways:

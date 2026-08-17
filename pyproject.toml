@@ -25,6 +25,7 @@ dependencies = [
     "fsspec>=2024.1.0",
     "numpy>=1.24",
     "pyimzml>=1.5.5",
+    "scipy>=1.10",
     "xarray>=2024.1.0",
 ]
 

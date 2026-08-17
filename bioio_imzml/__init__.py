@@ -7,7 +7,8 @@ try:
 except PackageNotFoundError:
     __version__ = "uninstalled"
 
+from .peak_picking import PeakPickingResult, auto_pick_peaks
 from .reader import Reader
 from .reader_metadata import ReaderMetadata
 
-__all__ = ["Reader", "ReaderMetadata"]
+__all__ = ["PeakPickingResult", "Reader", "ReaderMetadata", "auto_pick_peaks"]
