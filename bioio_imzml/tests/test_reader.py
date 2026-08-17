@@ -43,7 +43,7 @@ def test_continuous_shape_and_values(continuous_imzml: Path) -> None:
 
 def test_continuous_channel_names(continuous_imzml: Path) -> None:
     reader = Reader(continuous_imzml)
-    assert reader.channel_names == [f"{mz:.4f}" for mz in CONTINUOUS_MZ_AXIS]
+    assert reader.channel_names == [f"{mz:.4f}±0.0000" for mz in CONTINUOUS_MZ_AXIS]
     np.testing.assert_allclose(reader.mz_values, CONTINUOUS_MZ_AXIS)
 
 
@@ -78,18 +78,24 @@ def test_processed_tolerance_zeroes_distant_targets(processed_imzml: Path) -> No
 
     no_tolerance = Reader(processed_imzml, mz=far_target)
     assert no_tolerance.data[0, 0, 0, 0, 0] != 0  # nearest peak returned regardless
+    # a lone target has no neighbor to estimate a window from, so it's left
+    # unbounded rather than filtered.
+    assert np.isinf(no_tolerance.mz_tolerance[0])
 
     # same units as m/z: the jittered peaks are within ~0.1 of their center,
-    # so a 1.0 tolerance easily rejects a target that's ~750 away.
-    with_tolerance = Reader(processed_imzml, mz=far_target, mz_tolerance=1.0)
-    assert with_tolerance.mz_tolerance == 1.0
+    # so a 1.0 Da tolerance easily rejects a target that's ~750 away.
+    with_tolerance = Reader(processed_imzml, mz=far_target, mz_tolerance_absolute=1.0)
+    assert with_tolerance.mz_tolerance_absolute == 1.0
+    np.testing.assert_allclose(with_tolerance.mz_tolerance, [1.0])
     assert with_tolerance.data[0, 0, 0, 0, 0] == 0  # too far, zeroed out
 
 
 def test_processed_tolerance_keeps_close_targets(processed_imzml: Path) -> None:
     # PROCESSED_PEAK_CENTERS targets sit within jitter distance (<=0.08) of a
     # real peak at every pixel, so a modest tolerance should keep every value.
-    reader = Reader(processed_imzml, mz=PROCESSED_PEAK_CENTERS, mz_tolerance=0.1)
+    reader = Reader(
+        processed_imzml, mz=PROCESSED_PEAK_CENTERS, mz_tolerance_absolute=0.1
+    )
     data = reader.data
     for y in range(PROCESSED_HEIGHT):
         for x in range(PROCESSED_WIDTH):
@@ -97,6 +103,40 @@ def test_processed_tolerance_keeps_close_targets(processed_imzml: Path) -> None:
             np.testing.assert_allclose(
                 data[0, :, 0, y, x], processed_expected(pixel_id)
             )
+
+
+def test_processed_tolerance_combines_absolute_and_relative(
+    processed_imzml: Path,
+) -> None:
+    # tolerance = absolute + m/z * relative (relative is a plain fraction of
+    # m/z, e.g. 3e-6 for 3 ppm)
+    reader = Reader(
+        processed_imzml,
+        mz=PROCESSED_PEAK_CENTERS,
+        mz_tolerance_absolute=0.005,
+        mz_tolerance_relative=3e-6,
+    )
+    expected = 0.005 + np.asarray(PROCESSED_PEAK_CENTERS) * 3e-6
+    np.testing.assert_allclose(reader.mz_tolerance, expected)
+    assert reader.channel_names == [
+        f"{mz:.4f}±{tol:.4f}" for mz, tol in zip(PROCESSED_PEAK_CENTERS, expected)
+    ]
+
+
+def test_processed_tolerance_auto_estimated(processed_imzml: Path) -> None:
+    # neither tolerance component given: falls back to half the distance to
+    # each target's nearest neighboring target (100 apart here, so 50 each).
+    reader = Reader(processed_imzml, mz=PROCESSED_PEAK_CENTERS)
+    np.testing.assert_allclose(reader.mz_tolerance, [50.0, 50.0])
+    assert reader.mz_tolerance_absolute is None
+    assert reader.mz_tolerance_relative is None
+
+
+def test_continuous_tolerance_always_zero(continuous_imzml: Path) -> None:
+    # "continuous" mode reads its native axis exactly; no auto-estimate
+    # applies even though targets are far apart (100 m/z steps).
+    reader = Reader(continuous_imzml)
+    np.testing.assert_allclose(reader.mz_tolerance, np.zeros(len(CONTINUOUS_MZ_AXIS)))
 
 
 def test_processed_auto_bins(processed_imzml: Path) -> None:

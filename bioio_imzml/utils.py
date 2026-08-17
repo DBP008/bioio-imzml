@@ -30,14 +30,14 @@ def nearest_intensities(
     mzs: np.ndarray,
     intensities: np.ndarray,
     targets: np.ndarray,
-    tolerance: float | None = None,
+    tolerance: np.ndarray | float | None = None,
 ) -> np.ndarray:
     """Intensity at the nearest measured m/z to each value in `targets`.
 
     `mzs` must be sorted ascending, as the imzML spec requires. If
-    `tolerance` is given (in the same units as `targets`, i.e. m/z), a target
-    with no measured peak within that distance gets 0 instead of the (too
-    distant) nearest peak's intensity.
+    `tolerance` is given (in the same units as `targets`, i.e. m/z; scalar or
+    one value per target), a target with no measured peak within that
+    distance gets 0 instead of the (too distant) nearest peak's intensity.
     """
     if len(mzs) == 0:
         return np.zeros(len(targets), dtype=np.float32)
@@ -52,6 +52,43 @@ def nearest_intensities(
         result = np.where(diff <= tolerance, result, 0.0)
 
     return result
+
+
+def mz_tolerance_window(
+    mz_axis: np.ndarray,
+    absolute: float | None,
+    relative: float | None,
+) -> np.ndarray:
+    """Per-channel tolerance combining an absolute and a relative component:
+    `tolerance = absolute + m/z * relative`. Both are in the same units as
+    `mz_axis` (m/z); e.g. for a 3 ppm relative component pass
+    `relative=3e-6`. Either component may be None (treated as 0); with both
+    None every value is 0.
+    """
+    tolerance = np.zeros(len(mz_axis), dtype=np.float64)
+    if absolute is not None:
+        tolerance += absolute
+    if relative is not None:
+        tolerance += mz_axis * relative
+    return tolerance
+
+
+def estimate_mz_tolerance(mz_axis: np.ndarray) -> np.ndarray:
+    """Auto-estimated per-channel tolerance when the caller sets neither
+    tolerance component: half the distance to each channel's nearest
+    neighboring target, so adjacent channels' windows never overlap. A
+    channel with no neighbor (a single target) gets an unbounded tolerance
+    (no filtering).
+
+    `mz_axis` must be sorted ascending.
+    """
+    n = len(mz_axis)
+    if n <= 1:
+        return np.full(n, np.inf, dtype=np.float64)
+    gaps = np.diff(mz_axis)
+    gap_to_left = np.concatenate(([np.inf], gaps))
+    gap_to_right = np.concatenate((gaps, [np.inf]))
+    return np.minimum(gap_to_left, gap_to_right) / 2.0
 
 
 def scan_mz_bounds(portable: "PortableSpectrumReader", ibd_file) -> tuple[float, float]:

@@ -9,7 +9,13 @@ from dask.delayed import delayed
 from fsspec.spec import AbstractFileSystem
 from pyimzml.ImzMLParser import ImzMLParser, PortableSpectrumReader
 
-from .utils import find_ibd_path, nearest_intensities, scan_mz_bounds
+from .utils import (
+    estimate_mz_tolerance,
+    find_ibd_path,
+    mz_tolerance_window,
+    nearest_intensities,
+    scan_mz_bounds,
+)
 
 ###############################################################################
 
@@ -42,13 +48,23 @@ class Reader(reader.Reader):
         file's true global m/z span, found with a cheap scan of each
         spectrum's first/last value.
         Default: 512
-    mz_tolerance: Optional[float]
-        Only used for "processed" mode files. Maximum allowed distance
-        between a target m/z and the nearest measured peak, in the same units
-        as `mz` itself (e.g. `mz_tolerance=0.005` next to `mz=[798.54]`). A
-        pixel with no peak within tolerance gets 0 for that channel instead of
-        the (too distant) nearest peak's intensity.
-        Default: None (always use the nearest peak, however far away)
+    mz_tolerance_absolute: Optional[float]
+        Only used for "processed" mode files. The absolute component of the
+        per-channel matching window, in the same units as `mz` itself (e.g.
+        `mz_tolerance_absolute=0.005` for 0.005 Da). Combined with
+        `mz_tolerance_relative` as `tolerance = absolute + m/z * relative`. A
+        pixel with no peak within `tolerance` of a target gets 0 for that
+        channel instead of the (too distant) nearest peak's intensity.
+        Default: None (see Notes for the fallback when both components are
+        unset)
+    mz_tolerance_relative: Optional[float]
+        Only used for "processed" mode files. The relative component of the
+        matching window, as a fraction of m/z -- see `mz_tolerance_absolute`.
+        Also in the same units as `mz` (a plain fraction, not a percentage or
+        ppm count): convert yourself, e.g. `mz_tolerance_relative=3e-6` for a
+        3 ppm window.
+        Default: None (see Notes for the fallback when both components are
+        unset)
     fs_kwargs: Dict[str, Any]
         Any specific keyword arguments to pass down to the fsspec created
         filesystem.
@@ -56,6 +72,17 @@ class Reader(reader.Reader):
 
     Notes
     -----
+    For "processed" mode files, leaving both tolerance parameters unset
+    doesn't disable filtering -- it auto-estimates one instead: each
+    channel's tolerance becomes half the distance to its nearest neighboring
+    target m/z, so adjacent channels' windows never overlap (a lone target
+    with no neighbor is left unbounded, i.e. no filtering). Pass either
+    tolerance parameter explicitly to opt out of the estimate and use a fixed
+    window instead. "continuous" mode files always read their native axis
+    exactly, so no window ever applies there (tolerance is 0). Either way,
+    `channel_names` reports the resulting per-channel window as
+    `"<m/z>±<tolerance>"`.
+
     imzML stores spectra in one of two modes:
 
     * "continuous": every pixel shares one m/z axis, so the intensity array at
@@ -108,7 +135,8 @@ class Reader(reader.Reader):
         mz: Sequence[float] | np.ndarray | None = None,
         mz_step: float | None = None,
         n_bins: int = 512,
-        mz_tolerance: float | None = None,
+        mz_tolerance_absolute: float | None = None,
+        mz_tolerance_relative: float | None = None,
         fs_kwargs: dict[str, Any] = {},
         **kwargs: Any,
     ):
@@ -157,7 +185,22 @@ class Reader(reader.Reader):
             else:
                 self._mz_axis = np.linspace(lo, hi, n_bins)
 
-        self._mz_tolerance = mz_tolerance
+        self._mz_tolerance_absolute = mz_tolerance_absolute
+        self._mz_tolerance_relative = mz_tolerance_relative
+        # Per-channel window used both for channel_names and to filter
+        # nearest-neighbor matches in "processed" mode (see _read_row);
+        # ignored for "continuous" mode, which reads its native axis exactly
+        # regardless.
+        if mz_tolerance_absolute is None and mz_tolerance_relative is None:
+            self._mz_tolerance = (
+                np.zeros(len(self._mz_axis), dtype=np.float64)
+                if self._continuous
+                else estimate_mz_tolerance(self._mz_axis)
+            )
+        else:
+            self._mz_tolerance = mz_tolerance_window(
+                self._mz_axis, mz_tolerance_absolute, mz_tolerance_relative
+            )
         self._scenes: tuple[str, ...] = ("Image:0",)
 
     @property
@@ -186,10 +229,28 @@ class Reader(reader.Reader):
         return self._continuous
 
     @property
-    def mz_tolerance(self) -> float | None:
-        """The tolerance (same units as m/z) passed to nearest-neighbor lookup
-        for "processed" mode files (None means no tolerance: always use the
-        nearest peak).
+    def mz_tolerance_absolute(self) -> float | None:
+        """The Da (absolute) component passed for the matching window, as
+        given to `__init__` (None means 0 Da).
+        """
+        return self._mz_tolerance_absolute
+
+    @property
+    def mz_tolerance_relative(self) -> float | None:
+        """The relative component passed for the matching window, as a
+        fraction of m/z, as given to `__init__` (None means 0).
+        """
+        return self._mz_tolerance_relative
+
+    @property
+    def mz_tolerance(self) -> np.ndarray:
+        """The final per-channel tolerance (same units as m/z), one value per
+        `mz_values` entry: `mz_tolerance_absolute + m/z * mz_tolerance_relative`
+        if either was given to `__init__`; otherwise, for "processed" mode
+        files, an auto-estimate (see class Notes); otherwise (i.e.
+        "continuous" mode with neither given) all zeros. This is the same
+        array used to filter nearest-neighbor matches in "processed" mode and
+        to format `channel_names`.
         """
         return self._mz_tolerance
 
@@ -202,7 +263,7 @@ class Reader(reader.Reader):
         width: int,
         mz_axis: np.ndarray,
         continuous: bool,
-        mz_tolerance: float | None,
+        mz_tolerance: np.ndarray | None,
     ) -> np.ndarray:
         """One (channels, width) row: all pixels at a given (z, y)."""
         out = np.zeros((len(mz_axis), width), dtype=np.float32)
@@ -251,7 +312,10 @@ class Reader(reader.Reader):
             image_data, "CZYX", dimensions.DEFAULT_DIMENSION_ORDER
         )
         coords = {
-            dimensions.DimensionNames.Channel: [f"{mz:.4f}" for mz in self._mz_axis]
+            dimensions.DimensionNames.Channel: [
+                f"{mz:.4f}±{tol:.4f}"
+                for mz, tol in zip(self._mz_axis, self._mz_tolerance)
+            ]
         }
         return xr.DataArray(
             image_data,

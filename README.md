@@ -23,13 +23,14 @@ from bioio import BioImage
 
 img = BioImage("sample.imzML")
 img.dims.order  # "TCZYX" -- C is the m/z axis
-img.channel_names  # m/z values, formatted as strings
+img.channel_names  # "<m/z>±<tolerance>" strings, e.g. "798.5400±0.0000"
 img.data  # (T, C, Z, Y, X) numpy array
 ```
 
-imzML-specific options (`mz`, `mz_step`, `n_bins`, `mz_tolerance`) work the same way
-through `BioImage(..., mz=[...])`, since `BioImage` forwards unrecognized
-keyword arguments straight to the reader. Or use the reader directly:
+imzML-specific options (`mz`, `mz_step`, `n_bins`, `mz_tolerance_absolute`,
+`mz_tolerance_relative`) work the same way through `BioImage(..., mz=[...])`,
+since `BioImage` forwards unrecognized keyword arguments straight to the
+reader. Or use the reader directly:
 
 ```python
 from bioio_imzml import Reader
@@ -38,9 +39,24 @@ from bioio_imzml import Reader
 reader = Reader("sample.imzML", mz=[798.54, 826.57, 885.55])
 
 # reject a target with no real peak nearby instead of returning whatever
-# peak happens to be closest, however far away. mz_tolerance is in the same
-# units as mz itself (m/z, i.e. Da):
-reader = Reader("sample.imzML", mz=[798.54, 826.57], mz_tolerance=0.005)
+# peak happens to be closest, however far away. mz_tolerance_absolute and
+# mz_tolerance_relative are both in the same units as mz (m/z) -- relative
+# is a plain fraction, not a ppm count, so convert yourself (3 ppm = 3e-6).
+# They combine per channel as: tolerance = absolute + m/z * relative
+reader = Reader(
+    "sample.imzML",
+    mz=[798.54, 826.57],
+    mz_tolerance_absolute=0.005,
+    mz_tolerance_relative=3e-6,  # 3 ppm
+)
+reader.mz_tolerance  # the resulting per-channel tolerance, e.g. [0.0074, 0.0075]
+reader.channel_names  # ["798.5400±0.0074", "826.5700±0.0075"]
+
+# leave both unset and "processed" mode files get a tolerance for free:
+# half the distance to each target's nearest neighboring target, so windows
+# never overlap (a lone target with no neighbor is left unbounded).
+reader = Reader("sample.imzML", mz=[798.54, 826.57, 885.55])
+reader.mz_tolerance  # e.g. [14.015, 14.015, 29.49] (half the gaps above/below)
 
 # or let the reader pick evenly spaced channels across the file's m/z range,
 # either a fixed count (n_bins) or a fixed step (mz_step) in m/z units:
