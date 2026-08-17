@@ -1,3 +1,4 @@
+import warnings
 from collections.abc import Sequence
 from typing import Any
 
@@ -152,7 +153,11 @@ class Reader(reader.Reader):
         with (
             self._fs.open(self._path, "rb") as imzml_f,
             self._fs.open(self._ibd_path, "rb") as ibd_f,
+            warnings.catch_warnings(),
         ):
+            warnings.filterwarnings(
+                "ignore", category=UserWarning, module="pyimzml.ontology.ontology"
+            )
             parser = ImzMLParser(imzml_f, ibd_file=ibd_f)
 
         self._imzmldict: dict[str, Any] = parser.imzmldict
