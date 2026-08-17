@@ -15,6 +15,7 @@ from .utils import (
     mz_tolerance_window,
     nearest_intensities,
     scan_mz_bounds,
+    tolerance_decimal_places,
 )
 
 ###############################################################################
@@ -81,7 +82,9 @@ class Reader(reader.Reader):
     window instead. "continuous" mode files always read their native axis
     exactly, so no window ever applies there (tolerance is 0). Either way,
     `channel_names` reports the resulting per-channel window as
-    `"<m/z>±<tolerance>"`.
+    `"<m/z>±<tolerance>"`, with both sides shown to as many decimal places as
+    the tolerance needs for 3 significant digits (e.g. `150.00000±0.00550`),
+    falling back to 4 decimals when the tolerance is 0 or unbounded (inf).
 
     imzML stores spectra in one of two modes:
 
@@ -311,12 +314,11 @@ class Reader(reader.Reader):
         image_data = transforms.reshape_data(
             image_data, "CZYX", dimensions.DEFAULT_DIMENSION_ORDER
         )
-        coords = {
-            dimensions.DimensionNames.Channel: [
-                f"{mz:.4f}±{tol:.4f}"
-                for mz, tol in zip(self._mz_axis, self._mz_tolerance)
-            ]
-        }
+        names = []
+        for mz, tol in zip(self._mz_axis, self._mz_tolerance):
+            decimals = tolerance_decimal_places(tol)
+            names.append(f"{mz:.{decimals}f}±{tol:.{decimals}f}")
+        coords = {dimensions.DimensionNames.Channel: names}
         return xr.DataArray(
             image_data,
             dims=list(dimensions.DEFAULT_DIMENSION_ORDER),

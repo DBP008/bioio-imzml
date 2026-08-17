@@ -15,6 +15,7 @@ from bioio_imzml.tests.conftest import (
     continuous_expected,
     processed_expected,
 )
+from bioio_imzml.utils import tolerance_decimal_places
 
 ###############################################################################
 
@@ -43,7 +44,10 @@ def test_continuous_shape_and_values(continuous_imzml: Path) -> None:
 
 def test_continuous_channel_names(continuous_imzml: Path) -> None:
     reader = Reader(continuous_imzml)
-    assert reader.channel_names == [f"{mz:.4f}±0.0000" for mz in CONTINUOUS_MZ_AXIS]
+    decimals = tolerance_decimal_places(0.0)
+    assert reader.channel_names == [
+        f"{mz:.{decimals}f}±{0.0:.{decimals}f}" for mz in CONTINUOUS_MZ_AXIS
+    ]
     np.testing.assert_allclose(reader.mz_values, CONTINUOUS_MZ_AXIS)
 
 
@@ -119,7 +123,8 @@ def test_processed_tolerance_combines_absolute_and_relative(
     expected = 0.005 + np.asarray(PROCESSED_PEAK_CENTERS) * 3e-6
     np.testing.assert_allclose(reader.mz_tolerance, expected)
     assert reader.channel_names == [
-        f"{mz:.4f}±{tol:.4f}" for mz, tol in zip(PROCESSED_PEAK_CENTERS, expected)
+        f"{mz:.{tolerance_decimal_places(tol)}f}±{tol:.{tolerance_decimal_places(tol)}f}"
+        for mz, tol in zip(PROCESSED_PEAK_CENTERS, expected)
     ]
 
 

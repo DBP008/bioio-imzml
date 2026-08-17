@@ -91,6 +91,18 @@ def estimate_mz_tolerance(mz_axis: np.ndarray) -> np.ndarray:
     return np.minimum(gap_to_left, gap_to_right) / 2.0
 
 
+def tolerance_decimal_places(tol: float, sig_figs: int = 3, default: int = 4) -> int:
+    """Decimal places needed to show `tol` with at most `sig_figs`
+    significant digits, e.g. 0.0055 -> 5 (for sig_figs=3). Falls back to
+    `default` decimals when `tol` isn't a positive finite number (zero, inf,
+    nan), where "significant digits" isn't a meaningful concept.
+    """
+    if not np.isfinite(tol) or tol <= 0:
+        return default
+    exponent = int(f"{tol:.{sig_figs - 1}e}".split("e")[1])
+    return max(0, sig_figs - 1 - exponent)
+
+
 def scan_mz_bounds(portable: "PortableSpectrumReader", ibd_file) -> tuple[float, float]:
     """Global (min, max) m/z across every spectrum.
 
