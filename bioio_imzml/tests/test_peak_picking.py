@@ -65,6 +65,4 @@ def test_auto_pick_peaks_filters_spatial_noise(spatial_imzml: Path) -> None:
     )
 
     assert any(np.isclose(mz, SPATIAL_REAL_PEAK_MZ, atol=5.0) for mz in result.mzs)
-    assert not any(
-        np.isclose(mz, SPATIAL_NOISE_PEAK_MZ, atol=5.0) for mz in result.mzs
-    )
+    assert not any(np.isclose(mz, SPATIAL_NOISE_PEAK_MZ, atol=5.0) for mz in result.mzs)
