@@ -89,3 +89,25 @@ def spatial_imzml(tmp_path: Path) -> Path:
                     intensities = intensities + noise_bump
                 writer.addSpectrum(SPATIAL_MZ_AXIS, intensities, (x, y))
     return path
+
+
+@pytest.fixture
+def spatial_processed_imzml(tmp_path: Path) -> Path:
+    """Same real-vs-noise layout as `spatial_imzml`, but written in
+    "processed" mode (a distinct m/z array per spectrum, so `Reader`
+    structurally detects `is_continuous=False`) to exercise the "processed"
+    branch of `pixel_frequency_and_spatial_chaos`.
+    """
+    path = tmp_path / "spatial_processed.imzML"
+    real_bump = _gaussian_bump(SPATIAL_MZ_AXIS, SPATIAL_REAL_PEAK_MZ, 50.0)
+    noise_bump = _gaussian_bump(SPATIAL_MZ_AXIS, SPATIAL_NOISE_PEAK_MZ, 50.0)
+    with ImzMLWriter(str(path), mode="processed") as writer:
+        for y in range(1, SPATIAL_HEIGHT + 1):
+            for x in range(1, SPATIAL_WIDTH + 1):
+                intensities = np.zeros_like(SPATIAL_MZ_AXIS)
+                if x <= SPATIAL_WIDTH // 2:
+                    intensities = intensities + real_bump
+                if (x, y) == SPATIAL_NOISE_PIXEL:
+                    intensities = intensities + noise_bump
+                writer.addSpectrum(SPATIAL_MZ_AXIS, intensities, (x, y))
+    return path

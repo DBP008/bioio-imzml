@@ -78,36 +78,54 @@ rather than real signal):
 import bioio_imzml
 from bioio import BioImage
 
-# pin a tolerance and reuse it for picking and extraction. Left unset, both
-# calls auto-estimate one from neighboring target spacing (see above) -- but
-# result.mzs is a *subset* of the candidates picking scored against, so its
-# neighbor gaps differ and the auto-estimate at extraction time won't match
-# the tolerance that produced pixel_frequency/spatial_chaos.
-tol_abs, tol_rel = 0.005, 3e-6  # 3 ppm
+# pin a tolerance and reuse it for picking and extraction, so extraction
+# matches what pixel_frequency/spatial_chaos actually scored. Size it to
+# bin_width, not to ppm mass-accuracy precision: candidates come from a
+# bin_width-binned mean spectrum, so a candidate's reported m/z can be off
+# from the true peak by up to ~bin_width/2.
+bin_width = 0.05
+tol_abs = bin_width
 
 result = bioio_imzml.auto_pick_peaks(
     "sample.imzML",
     min_mz=650,
     max_mz=850,
+    bin_width=bin_width,
     mz_tolerance_absolute=tol_abs,
-    mz_tolerance_relative=tol_rel,
 )
 result.mzs  # candidate m/z values, sorted by descending intensity
 result.pixel_frequency  # fraction of pixels with signal, one per mz
 result.spatial_chaos  # 0 (structured) .. 1 (spatially random), one per mz
+
+if len(result.mzs) == 0:
+    # min_pixel_frequency/max_spatial_chaos defaults can reject every
+    # candidate on data with sparse per-pixel peak-picking (e.g.
+    # single-cell-resolution processed-mode files) -- loosen or disable a
+    # filter rather than pass an empty mz list on to Reader/BioImage:
+    result = bioio_imzml.auto_pick_peaks(
+        "sample.imzML",
+        min_mz=650,
+        max_mz=850,
+        bin_width=bin_width,
+        mz_tolerance_absolute=tol_abs,
+        max_spatial_chaos=None,
+    )
 
 img = BioImage(
     "sample.imzML",
     reader=bioio_imzml.Reader,
     mz=result.mzs,
     mz_tolerance_absolute=tol_abs,
-    mz_tolerance_relative=tol_rel,
 )
 ```
 
 Tune detection sensitivity (`snr_threshold`, `min_relative_intensity`,
 `min_separation_mz`) and the quality filters (`min_pixel_frequency`,
 `max_spatial_chaos`) as keyword arguments; see the docstring for defaults.
+`snr_threshold`, `min_pixel_frequency`, and `max_spatial_chaos` each accept
+`None` to disable that filter -- passing `None` for both quality filters
+also skips the per-pixel pass over the file entirely (the slow part),
+leaving `result.pixel_frequency`/`result.spatial_chaos` as `NaN`.
 `bioio_imzml.peak_picking` also exposes the individual steps --
 `mean_spectrum`, `find_peaks_in_spectrum`, and
 `pixel_frequency_and_spatial_chaos` -- to inspect intermediate results or why

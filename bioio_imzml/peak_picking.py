@@ -18,7 +18,7 @@ def find_peaks_in_spectrum(
     smooth: bool = True,
     savgol_window: int = 7,
     savgol_polyorder: int = 2,
-    snr_threshold: float = 3.0,
+    snr_threshold: float | None = 3.0,
     min_relative_intensity: float = 0.005,
     min_separation_mz: float = 0.5,
 ) -> np.ndarray:
@@ -28,24 +28,28 @@ def find_peaks_in_spectrum(
     pair such as the one returned by `mean_spectrum`.
 
     `snr_threshold` is a prominence threshold as a multiple of the spectrum's
-    MAD noise floor; `min_relative_intensity` is a height threshold as a
-    fraction of the spectrum's max; `min_separation_mz` is the minimum
-    distance between two accepted peaks, converted to samples using the
-    median spacing of `mz_axis`.
+    MAD noise floor, or `None` to disable prominence filtering entirely;
+    `min_relative_intensity` is a height threshold as a fraction of the
+    spectrum's max; `min_separation_mz` is the minimum distance between two
+    accepted peaks, converted to samples using the median spacing of
+    `mz_axis`.
     """
     if smooth and len(intensity) > savgol_window:
         signal = savgol_filter(intensity, savgol_window, savgol_polyorder)
     else:
         signal = intensity
 
-    noise_level = np.median(np.abs(signal - np.median(signal)))
     step = np.median(np.diff(mz_axis)) if len(mz_axis) > 1 else 1.0
     distance = max(1, int(round(min_separation_mz / step)))
+    prominence = None
+    if snr_threshold is not None:
+        noise_level = np.median(np.abs(signal - np.median(signal)))
+        prominence = snr_threshold * noise_level
 
     peak_indices, _ = find_peaks(
         signal,
         height=min_relative_intensity * np.max(signal),
-        prominence=snr_threshold * noise_level,
+        prominence=prominence,
         distance=distance,
     )
 
@@ -126,15 +130,18 @@ def pixel_frequency_and_spatial_chaos(
     )
     channel_dim = dimensions.DimensionNames.Channel
     xarr = reader.xarray_data
-    if reader.is_continuous:
-        # "continuous" mode Readers ignore `mz=` and expose their native
-        # axis instead -- select the candidate channels out of it. Safe to
-        # match exactly: `candidate_mzs` came from this same native axis via
-        # `mean_spectrum`/`find_peaks_in_spectrum`, no resampling in between.
-        idx = np.searchsorted(reader.mz_values, candidate_mzs)
-        idx = np.clip(idx, 0, len(reader.mz_values) - 1)
-        xarr = xarr.isel({channel_dim: idx})
-    xarr = xarr.astype(np.float64)
+    # `reader.mz_values` is never `candidate_mzs` in its original order: a
+    # "continuous" mode Reader ignores `mz=` and exposes its own native axis
+    # instead, and a "processed" mode Reader sorts `mz` ascending internally
+    # (see `Reader.__init__`) while `candidate_mzs` normally comes in
+    # descending-intensity order from `find_peaks_in_spectrum`. Realign the
+    # channel axis to `candidate_mzs`' order either way -- exact match for
+    # "processed" (the values are the same, just reordered), nearest match
+    # for "continuous" (safe: `candidate_mzs` came from this same native axis
+    # via `mean_spectrum`/`find_peaks_in_spectrum`, no resampling in between).
+    idx = np.searchsorted(reader.mz_values, candidate_mzs)
+    idx = np.clip(idx, 0, len(reader.mz_values) - 1)
+    xarr = xarr.isel({channel_dim: idx}).astype(np.float64)
 
     non_channel_dims = [d for d in xarr.dims if d != channel_dim]
     n_pixels = int(np.prod([xarr.sizes[d] for d in non_channel_dims]))
@@ -189,12 +196,15 @@ def auto_pick_peaks(
     min_mz: float | None = None,
     max_mz: float | None = None,
     bin_width: float = 0.05,
-    top_n_peaks: int | None = None,
-    snr_threshold: float = 3.0,
+    smooth: bool = True,
+    savgol_window: int = 7,
+    savgol_polyorder: int = 2,
+    snr_threshold: float | None = 3.0,
     min_relative_intensity: float = 0.005,
     min_separation_mz: float = 0.5,
-    min_pixel_frequency: float = 0.01,
-    max_spatial_chaos: float = 0.7,
+    min_pixel_frequency: float | None = 0.01,
+    max_spatial_chaos: float | None = 0.7,
+    top_n_peaks: int | None = None,
     mz_tolerance_absolute: float | None = None,
     mz_tolerance_relative: float | None = None,
     fs_kwargs: dict[str, Any] = {},
@@ -209,10 +219,30 @@ def auto_pick_peaks(
     the surviving channels lazily.
 
     Parameters mirror `mean_spectrum` (`min_mz`, `max_mz`, `bin_width`),
-    `find_peaks_in_spectrum` (`snr_threshold`, `min_relative_intensity`,
-    `min_separation_mz`), and `Reader` (`mz_tolerance_absolute`,
-    `mz_tolerance_relative`, `fs_kwargs`). `top_n_peaks` caps the number of
-    channels returned after filtering (default: all of them).
+    `find_peaks_in_spectrum` (`smooth`, `savgol_window`, `savgol_polyorder`,
+    `snr_threshold`, `min_relative_intensity`, `min_separation_mz`), and
+    `Reader` (`mz_tolerance_absolute`, `mz_tolerance_relative`, `fs_kwargs`).
+    `top_n_peaks` caps the number of channels returned after filtering
+    (default: all of them).
+
+    The mean spectrum this detects candidates on can look jagged at a fine
+    `bin_width` -- each bin is the nearest per-pixel peak's intensity
+    (`mean_spectrum`), not a true sum/binning, so adjacent bins can jump
+    around even where the real signal is smooth. `smooth`/`savgol_window`/
+    `savgol_polyorder` control the Savitzky-Golay smoothing applied before
+    detection (not to `result.mean_spectrum_intensity` itself, which stays
+    raw); widen `savgol_window` if that jaggedness is producing spurious or
+    duplicate-looking candidates.
+
+    `snr_threshold`, `min_pixel_frequency`, and `max_spatial_chaos` each
+    accept `None` to disable that filter -- e.g. data with sparse per-pixel
+    peak-picking (single-cell-resolution processed-mode files) can score
+    every candidate as spatially "chaotic" under the default threshold, so
+    `max_spatial_chaos=None` keeps whatever passes intensity/frequency
+    filtering instead of rejecting everything. When both
+    `min_pixel_frequency` and `max_spatial_chaos` are `None`, the per-pixel
+    pass over the file (the slow part) is skipped entirely and the result's
+    `pixel_frequency`/`spatial_chaos` come back filled with `NaN`.
     """
     mean_mz, mean_intensity = mean_spectrum(
         image, min_mz=min_mz, max_mz=max_mz, bin_width=bin_width, fs_kwargs=fs_kwargs
@@ -220,6 +250,9 @@ def auto_pick_peaks(
     candidates = find_peaks_in_spectrum(
         mean_mz,
         mean_intensity,
+        smooth=smooth,
+        savgol_window=savgol_window,
+        savgol_polyorder=savgol_polyorder,
         snr_threshold=snr_threshold,
         min_relative_intensity=min_relative_intensity,
         min_separation_mz=min_separation_mz,
@@ -229,16 +262,24 @@ def auto_pick_peaks(
         empty = np.zeros(0, dtype=np.float64)
         return PeakPickingResult(candidates, empty, empty, mean_mz, mean_intensity)
 
-    frequency, chaos = pixel_frequency_and_spatial_chaos(
-        image,
-        candidates,
-        mz_tolerance_absolute=mz_tolerance_absolute,
-        mz_tolerance_relative=mz_tolerance_relative,
-        fs_kwargs=fs_kwargs,
-    )
+    if min_pixel_frequency is None and max_spatial_chaos is None:
+        frequency = np.full(len(candidates), np.nan)
+        chaos = np.full(len(candidates), np.nan)
+    else:
+        frequency, chaos = pixel_frequency_and_spatial_chaos(
+            image,
+            candidates,
+            mz_tolerance_absolute=mz_tolerance_absolute,
+            mz_tolerance_relative=mz_tolerance_relative,
+            fs_kwargs=fs_kwargs,
+        )
 
     # boolean masking preserves `candidates`' existing descending-intensity order
-    keep = (frequency >= min_pixel_frequency) & (chaos <= max_spatial_chaos)
+    keep = np.ones(len(candidates), dtype=bool)
+    if min_pixel_frequency is not None:
+        keep &= frequency >= min_pixel_frequency
+    if max_spatial_chaos is not None:
+        keep &= chaos <= max_spatial_chaos
     mzs, frequency, chaos = candidates[keep], frequency[keep], chaos[keep]
 
     if top_n_peaks is not None:
