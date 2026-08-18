@@ -15,7 +15,11 @@ from bioio_imzml.tests.conftest import (
     continuous_expected,
     processed_expected,
 )
-from bioio_imzml.utils import parse_creation_date, tolerance_decimal_places
+from bioio_imzml.utils import (
+    local_window_intensities,
+    parse_creation_date,
+    tolerance_decimal_places,
+)
 
 ###############################################################################
 
@@ -83,6 +87,7 @@ def test_metadata_includes_reader_init_params(
         "n_bins": 512,
         "mz_tolerance_absolute": None,
         "mz_tolerance_relative": None,
+        "mz_agg": "sum",
         "is_continuous": True,
     }
 
@@ -93,6 +98,7 @@ def test_metadata_includes_reader_init_params(
         "n_bins": 512,
         "mz_tolerance_absolute": 0.1,
         "mz_tolerance_relative": None,
+        "mz_agg": "sum",
         "is_continuous": False,
     }
 
@@ -138,10 +144,11 @@ def test_processed_tolerance_zeroes_distant_targets(processed_imzml: Path) -> No
     far_target = np.array([999.0])  # nowhere near the ~150/250 peaks
 
     no_tolerance = Reader(processed_imzml, mz=far_target)
-    assert no_tolerance.data[0, 0, 0, 0, 0] != 0  # nearest peak returned regardless
     # a lone target has no neighbor to estimate a window from, so it's left
-    # unbounded rather than filtered.
+    # unbounded rather than filtered -- an unbounded window sums every peak
+    # in the pixel regardless of distance (default agg="sum").
     assert np.isinf(no_tolerance.mz_tolerance[0])
+    assert no_tolerance.data[0, 0, 0, 0, 0] != 0
 
     # same units as m/z: the jittered peaks are within ~0.1 of their center,
     # so a 1.0 Da tolerance easily rejects a target that's ~750 away.
@@ -192,6 +199,44 @@ def test_processed_tolerance_auto_estimated(processed_imzml: Path) -> None:
     np.testing.assert_allclose(reader.mz_tolerance, [50.0, 50.0])
     assert reader.mz_tolerance_absolute is None
     assert reader.mz_tolerance_relative is None
+
+
+def test_local_window_intensities_agg_sum_combines_targets_in_window() -> None:
+    mzs = np.array([100.0, 100.05, 100.1, 105.0])
+    intensities = np.array([1.0, 2.0, 3.0, 4.0])
+    targets = np.array([100.0, 105.0])
+    tolerance = np.array([0.1, 0.1])
+
+    result = local_window_intensities(mzs, intensities, targets, tolerance, agg="sum")
+    np.testing.assert_allclose(result, [6.0, 4.0])  # 1+2+3 within window; single match
+
+
+def test_local_window_intensities_agg_sum_no_tolerance_requires_exact_match() -> None:
+    mzs = np.array([100.0, 100.05])
+    intensities = np.array([1.0, 2.0])
+    targets = np.array([100.0, 100.05, 100.02])
+
+    result = local_window_intensities(
+        mzs, intensities, targets, tolerance=None, agg="sum"
+    )
+    np.testing.assert_allclose(result, [1.0, 2.0, 0.0])
+
+
+def test_processed_agg_sum_threaded_through_reader(processed_imzml: Path) -> None:
+    # each target's window in this fixture only ever contains one peak, so
+    # summing should match the nearest-neighbor result -- this exercises
+    # mz_agg being threaded through Reader/_read_row/_read_immediate rather
+    # than the aggregation math itself (covered directly above).
+    reader = Reader(processed_imzml, mz=PROCESSED_PEAK_CENTERS, mz_agg="sum")
+    assert reader.mz_agg == "sum"
+
+    data = reader.data
+    for y in range(PROCESSED_HEIGHT):
+        for x in range(PROCESSED_WIDTH):
+            pixel_id = y * PROCESSED_WIDTH + x
+            np.testing.assert_allclose(
+                data[0, :, 0, y, x], processed_expected(pixel_id)
+            )
 
 
 def test_continuous_tolerance_always_zero(continuous_imzml: Path) -> None:

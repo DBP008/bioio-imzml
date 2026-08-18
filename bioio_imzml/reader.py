@@ -1,6 +1,6 @@
 import warnings
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Literal
 
 import dask.array as da
 import numpy as np
@@ -14,8 +14,8 @@ from pyimzml.ImzMLParser import ImzMLParser, PortableSpectrumReader
 from .utils import (
     estimate_mz_tolerance,
     find_ibd_path,
+    local_window_intensities,
     mz_tolerance_window,
-    nearest_intensities,
     parse_creation_date,
     scan_mz_bounds,
     tolerance_decimal_places,
@@ -58,7 +58,7 @@ class Reader(reader.Reader):
         `mz_tolerance_absolute=0.005` for 0.005 Da). Combined with
         `mz_tolerance_relative` as `tolerance = absolute + m/z * relative`. A
         pixel with no peak within `tolerance` of a target gets 0 for that
-        channel instead of the (too distant) nearest peak's intensity.
+        channel (see `mz_agg` for how peaks within the window combine).
         Default: None (see Notes for the fallback when both components are
         unset)
     mz_tolerance_relative: Optional[float]
@@ -69,6 +69,14 @@ class Reader(reader.Reader):
         3 ppm window.
         Default: None (see Notes for the fallback when both components are
         unset)
+    mz_agg: Literal["nearest", "sum"]
+        Only used for "processed" mode files. How each channel's value is
+        computed from the peaks within its tolerance window: "sum" adds up
+        every measured peak's intensity in the window, matching how many
+        external tools (e.g. Lipostar, MetaboScape) aggregate signal in a
+        window; "nearest" takes the closest measured peak's intensity
+        instead, dropping the rest.
+        Default: "sum"
     fs_kwargs: Dict[str, Any]
         Any specific keyword arguments to pass down to the fsspec created
         filesystem.
@@ -88,6 +96,7 @@ class Reader(reader.Reader):
     `"<m/z>±<tolerance>"`, with both sides shown to as many decimal places as
     the tolerance needs for 3 significant digits (e.g. `150.00000±0.00550`),
     falling back to 4 decimals when the tolerance is 0 or unbounded (inf).
+    `mz_agg` is likewise ignored for "continuous" mode files.
 
     imzML stores spectra in one of two modes:
 
@@ -97,9 +106,10 @@ class Reader(reader.Reader):
       every spectrum) and reads it directly, with no resampling.
     * "processed": each pixel has its own m/z axis (typical for high
       resolution / profile data). There is no single true set of channels, so
-      this reader resamples each spectrum onto shared target m/z values via
-      nearest-neighbor lookup, given explicitly via `mz` or auto-generated
-      with `mz_step` or `n_bins`.
+      this reader resamples each spectrum onto shared target m/z values
+      (given explicitly via `mz` or auto-generated with `mz_step` or
+      `n_bins`), matching peaks within each channel's tolerance window per
+      `mz_agg`.
     """
 
     NAME = "bioio-imzml"
@@ -143,6 +153,7 @@ class Reader(reader.Reader):
         n_bins: int = 512,
         mz_tolerance_absolute: float | None = None,
         mz_tolerance_relative: float | None = None,
+        mz_agg: Literal["nearest", "sum"] = "sum",
         fs_kwargs: dict[str, Any] = {},
         **kwargs: Any,
     ):
@@ -206,6 +217,7 @@ class Reader(reader.Reader):
 
         self._mz_tolerance_absolute = mz_tolerance_absolute
         self._mz_tolerance_relative = mz_tolerance_relative
+        self._mz_agg = mz_agg
         # Per-channel window used both for channel_names and to filter
         # nearest-neighbor matches in "processed" mode (see _read_row);
         # ignored for "continuous" mode, which reads its native axis exactly
@@ -226,6 +238,7 @@ class Reader(reader.Reader):
             "n_bins": n_bins,
             "mz_tolerance_absolute": mz_tolerance_absolute,
             "mz_tolerance_relative": mz_tolerance_relative,
+            "mz_agg": mz_agg,
             "is_continuous": self._continuous,
         }
         self._scenes: tuple[str, ...] = ("Image:0",)
@@ -289,6 +302,13 @@ class Reader(reader.Reader):
         """
         return self._mz_tolerance
 
+    @property
+    def mz_agg(self) -> Literal["nearest", "sum"]:
+        """How each "processed" mode channel's value is computed from the
+        peaks within its tolerance window, as given to `__init__`.
+        """
+        return self._mz_agg
+
     @staticmethod
     def _read_row(
         fs: AbstractFileSystem,
@@ -299,6 +319,7 @@ class Reader(reader.Reader):
         mz_axis: np.ndarray,
         continuous: bool,
         mz_tolerance: np.ndarray | None,
+        mz_agg: Literal["nearest", "sum"],
     ) -> np.ndarray:
         """One (channels, width) row: all pixels at a given (z, y)."""
         out = np.zeros((len(mz_axis), width), dtype=np.float32)
@@ -311,8 +332,8 @@ class Reader(reader.Reader):
                 if continuous:
                     out[:, x0] = intensities
                 else:
-                    out[:, x0] = nearest_intensities(
-                        mzs, intensities, mz_axis, mz_tolerance
+                    out[:, x0] = local_window_intensities(
+                        mzs, intensities, mz_axis, mz_tolerance, mz_agg
                     )
 
         return out
@@ -332,6 +353,7 @@ class Reader(reader.Reader):
                         self._mz_axis,
                         self._continuous,
                         self._mz_tolerance,
+                        self._mz_agg,
                     ),
                     shape=(n_channels, self._width),
                     dtype=np.float32,
@@ -382,8 +404,12 @@ class Reader(reader.Reader):
                 if self._continuous:
                     arr[:, z - 1, y - 1, x - 1] = intensities
                 else:
-                    arr[:, z - 1, y - 1, x - 1] = nearest_intensities(
-                        mzs, intensities, self._mz_axis, self._mz_tolerance
+                    arr[:, z - 1, y - 1, x - 1] = local_window_intensities(
+                        mzs,
+                        intensities,
+                        self._mz_axis,
+                        self._mz_tolerance,
+                        self._mz_agg,
                     )
 
         return self._to_data_array(arr)

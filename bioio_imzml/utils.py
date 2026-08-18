@@ -1,6 +1,6 @@
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 from pyimzml.ImzMLParser import SIZE_DICT
@@ -27,21 +27,38 @@ def find_ibd_path(fs: "AbstractFileSystem", imzml_path: str) -> str:
     )
 
 
-def nearest_intensities(
+def local_window_intensities(
     mzs: np.ndarray,
     intensities: np.ndarray,
     targets: np.ndarray,
     tolerance: np.ndarray | float | None = None,
+    agg: Literal["nearest", "sum"] = "sum",
 ) -> np.ndarray:
-    """Intensity at the nearest measured m/z to each value in `targets`.
+    """Intensity at each value in `targets`, matched against measured peaks
+    within a local window around each target.
 
     `mzs` must be sorted ascending, as the imzML spec requires. If
     `tolerance` is given (in the same units as `targets`, i.e. m/z; scalar or
-    one value per target), a target with no measured peak within that
-    distance gets 0 instead of the (too distant) nearest peak's intensity.
+    one value per target), it bounds the matching window around each target.
+
+    `agg="sum"` (default): the sum of every measured peak's intensity within
+    `[target - tolerance, target + tolerance]`; `tolerance=None` means a
+    zero-width window, i.e. only an exact m/z match counts.
+
+    `agg="nearest"`: the nearest measured peak's intensity instead of a sum:
+    a target with no measured peak within `tolerance` gets 0 instead of the
+    (too distant) nearest peak's intensity.
     """
     if len(mzs) == 0:
         return np.zeros(len(targets), dtype=np.float32)
+
+    if agg == "sum":
+        tol = 0.0 if tolerance is None else tolerance
+        lo = np.searchsorted(mzs, targets - tol, side="left")
+        hi = np.searchsorted(mzs, targets + tol, side="right")
+        cumsum = np.concatenate(([0.0], np.cumsum(intensities)))
+        return (cumsum[hi] - cumsum[lo]).astype(np.float32)
+
     idx = np.clip(np.searchsorted(mzs, targets), 0, len(mzs) - 1)
     idx_prev = np.clip(idx - 1, 0, len(mzs) - 1)
     use_prev = np.abs(mzs[idx_prev] - targets) < np.abs(mzs[idx] - targets)

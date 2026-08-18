@@ -28,10 +28,10 @@ img.data  # (T, C, Z, Y, X) numpy array
 ```
 
 imzML-specific options (`mz`, `mz_step`, `n_bins`, `mz_tolerance_absolute`,
-`mz_tolerance_relative`) work the same way through `BioImage`, since it
-forwards unrecognized keyword arguments straight to the reader. Pass
-`reader=bioio_imzml.Reader` to skip plugin auto-detection (useful when more
-than one installed plugin could claim the file):
+`mz_tolerance_relative`, `mz_agg`) work the same way through `BioImage`,
+since it forwards unrecognized keyword arguments straight to the reader.
+Pass `reader=bioio_imzml.Reader` to skip plugin auto-detection (useful when
+more than one installed plugin could claim the file):
 
 ```python
 import bioio_imzml
@@ -65,6 +65,15 @@ img.reader.mz_tolerance  # e.g. [14.015, 14.015, 29.49] (half the gaps above/bel
 # either a fixed count (n_bins) or a fixed step (mz_step) in m/z units:
 img = BioImage("sample.imzML", reader=bioio_imzml.Reader, n_bins=512)
 img = BioImage("sample.imzML", reader=bioio_imzml.Reader, mz_step=0.1)
+
+# mz_agg controls how peaks within a channel's tolerance window combine.
+# Default is "sum" -- every measured peak in the window is added up, matching
+# how tools like Lipostar/MetaboScape aggregate signal in a window. Pass
+# "nearest" instead to take only the single closest measured peak per
+# channel (dropping the rest):
+img = BioImage(
+    "sample.imzML", reader=bioio_imzml.Reader, mz=[798.54, 826.57], mz_agg="nearest"
+)
 ```
 
 ## Auto peak-picking
@@ -141,8 +150,10 @@ imzML stores spectra in one of two ways:
   arguments needed.
 - **processed**: each pixel has its own m/z axis (typical for high-resolution
   profile data). There's no single true channel set, so this reader resamples
-  every spectrum onto shared target m/z values by nearest-neighbor lookup,
-  given via `mz=` or auto-generated with `n_bins=`.
+  every spectrum onto shared target m/z values, given via `mz=` or
+  auto-generated with `n_bins=`, summing peaks within each channel's
+  tolerance window by default (`mz_agg="sum"`; `mz_agg="nearest"` takes the
+  single closest peak instead).
 
 `reader.is_continuous` reports which case applies to a given file.
 

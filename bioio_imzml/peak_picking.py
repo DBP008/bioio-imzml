@@ -1,4 +1,4 @@
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 import numpy as np
 import xarray as xr
@@ -63,6 +63,7 @@ def mean_spectrum(
     min_mz: float | None = None,
     max_mz: float | None = None,
     bin_width: float = 0.05,
+    mz_agg: Literal["nearest", "sum"] = "sum",
     fs_kwargs: dict[str, Any] = {},
 ) -> tuple[np.ndarray, np.ndarray]:
     """Mean spectrum across every pixel of an imzML file, via `Reader`.
@@ -70,15 +71,18 @@ def mean_spectrum(
     For "continuous" mode files this is exact (every pixel already shares
     one m/z axis, and `Reader` reads it directly); `min_mz`/`max_mz` just
     restrict the returned range. For "processed" mode files, `Reader`'s own
-    nearest-neighbor channel matching at `bin_width` spacing stands in for
-    binning -- the same matching used when actually extracting channels, so
-    the candidates this finds line up with what extraction will return.
+    channel matching at `bin_width` spacing stands in for binning -- the same
+    matching used when actually extracting channels, so the candidates this
+    finds line up with what extraction will return. `mz_agg="sum"` (default)
+    adds up every measured peak in the bin; `mz_agg="nearest"` instead takes
+    each bin's single closest measured peak, which can look jagged at a fine
+    `bin_width` (see `find_peaks_in_spectrum`/`auto_pick_peaks` caveats).
 
     Returns
     -------
     mz_axis, mean_intensity : np.ndarray
     """
-    reader = Reader(image, mz_step=bin_width, fs_kwargs=fs_kwargs)
+    reader = Reader(image, mz_step=bin_width, mz_agg=mz_agg, fs_kwargs=fs_kwargs)
     mz_axis = reader.mz_values
     non_channel_dims = [
         d for d in reader.xarray_data.dims if d != dimensions.DimensionNames.Channel
@@ -225,14 +229,17 @@ def auto_pick_peaks(
     `top_n_peaks` caps the number of channels returned after filtering
     (default: all of them).
 
-    The mean spectrum this detects candidates on can look jagged at a fine
-    `bin_width` -- each bin is the nearest per-pixel peak's intensity
-    (`mean_spectrum`), not a true sum/binning, so adjacent bins can jump
-    around even where the real signal is smooth. `smooth`/`savgol_window`/
-    `savgol_polyorder` control the Savitzky-Golay smoothing applied before
-    detection (not to `result.mean_spectrum_intensity` itself, which stays
-    raw); widen `savgol_window` if that jaggedness is producing spurious or
-    duplicate-looking candidates.
+    The mean spectrum this detects candidates on uses `mean_spectrum`'s
+    default `mz_agg="sum"` (every measured peak within each bin summed, not
+    just the closest one). Call `mean_spectrum(image, bin_width=...,
+    mz_agg="nearest")` directly and feed it to `find_peaks_in_spectrum`
+    instead if you specifically want single-peak-per-bin values -- that mode
+    can look jagged at a fine `bin_width`, since adjacent bins can jump
+    around even where the real signal is smooth.
+    `smooth`/`savgol_window`/`savgol_polyorder` control the Savitzky-Golay
+    smoothing applied before detection (not to `result.mean_spectrum_intensity`
+    itself, which stays raw); widen `savgol_window` if that jaggedness is
+    producing spurious or duplicate-looking candidates.
 
     `snr_threshold`, `min_pixel_frequency`, and `max_spatial_chaos` each
     accept `None` to disable that filter -- e.g. data with sparse per-pixel
