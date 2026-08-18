@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -101,6 +102,26 @@ def tolerance_decimal_places(tol: float, sig_figs: int = 3, default: int = 4) ->
         return default
     exponent = int(f"{tol:.{sig_figs - 1}e}".split("e")[1])
     return max(0, sig_figs - 1 - exponent)
+
+
+def parse_creation_date(value: str | None) -> datetime | None:
+    """Parse an mzML `<run startTimeStamp>` value into a `datetime`.
+
+    The mzML spec types this as `xsd:dateTime` (ISO 8601), but some vendor
+    converters (e.g. RAW2IMZML) write it as `MM/DD/YYYY HH:MM:SS AM/PM`
+    instead; both are tried. Returns None if `value` is None or matches
+    neither format.
+    """
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(value, "%m/%d/%Y %I:%M:%S %p")
+    except ValueError:
+        return None
 
 
 def scan_mz_bounds(portable: "PortableSpectrumReader", ibd_file) -> tuple[float, float]:

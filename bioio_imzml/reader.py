@@ -6,6 +6,7 @@ import dask.array as da
 import numpy as np
 import xarray as xr
 from bioio_base import constants, dimensions, exceptions, io, reader, transforms, types
+from bioio_base.standard_metadata import StandardMetadata
 from dask.delayed import delayed
 from fsspec.spec import AbstractFileSystem
 from pyimzml.ImzMLParser import ImzMLParser, PortableSpectrumReader
@@ -15,6 +16,7 @@ from .utils import (
     find_ibd_path,
     mz_tolerance_window,
     nearest_intensities,
+    parse_creation_date,
     scan_mz_bounds,
     tolerance_decimal_places,
 )
@@ -161,6 +163,15 @@ class Reader(reader.Reader):
             parser = ImzMLParser(imzml_f, ibd_file=ibd_f)
 
         self._imzmldict: dict[str, Any] = parser.imzmldict
+        assert parser.root is not None
+        assert parser.metadata is not None
+        run_elem = parser.root.find(f"{parser.sl}run")
+        self._imzml_metadata: dict[str, Any] = {
+            **parser.metadata.pretty(),
+            "creation_date": (
+                run_elem.get("startTimeStamp") if run_elem is not None else None
+            ),
+        }
         self._width = int(self._imzmldict["max count of pixels x"])
         self._height = int(self._imzmldict["max count of pixels y"])
         self._depth = int(self._imzmldict.get("max count of pixels z", 1))
@@ -209,6 +220,14 @@ class Reader(reader.Reader):
             self._mz_tolerance = mz_tolerance_window(
                 self._mz_axis, mz_tolerance_absolute, mz_tolerance_relative
             )
+        self._reader_init_params: dict[str, Any] = {
+            "mz": None if mz is None else list(mz),
+            "mz_step": mz_step,
+            "n_bins": n_bins,
+            "mz_tolerance_absolute": mz_tolerance_absolute,
+            "mz_tolerance_relative": mz_tolerance_relative,
+            "is_continuous": self._continuous,
+        }
         self._scenes: tuple[str, ...] = ("Image:0",)
 
     @property
@@ -221,6 +240,14 @@ class Reader(reader.Reader):
         return types.PhysicalPixelSizes(
             Z=None, Y=self._pixel_size_y, X=self._pixel_size_x
         )
+
+    @property
+    def standard_metadata(self) -> StandardMetadata:
+        metadata = super().standard_metadata
+        metadata.imaging_datetime = parse_creation_date(
+            self._imzml_metadata.get("creation_date")
+        )
+        return metadata
 
     @property
     def mz_values(self) -> np.ndarray:
@@ -324,13 +351,20 @@ class Reader(reader.Reader):
             decimals = tolerance_decimal_places(tol)
             names.append(f"{mz:.{decimals}f}±{tol:.{decimals}f}")
         coords = {dimensions.DimensionNames.Channel: names}
+        # self._imzmldict (pixel/dimension counts, sizes) is deliberately not
+        # spread in here -- pyimzml's own docs call it deprecated, and every
+        # field it has is already nested under imzml_metadata["scan_settings"].
+        metadata = {
+            "imzml_metadata": self._imzml_metadata,
+            "reader_init_params": self._reader_init_params,
+        }
         return xr.DataArray(
             image_data,
             dims=list(dimensions.DEFAULT_DIMENSION_ORDER),
             coords=coords,
             attrs={
-                constants.METADATA_UNPROCESSED: self._imzmldict,
-                constants.METADATA_PROCESSED: self._imzmldict,
+                constants.METADATA_UNPROCESSED: metadata,
+                constants.METADATA_PROCESSED: metadata,
             },
         )
 
