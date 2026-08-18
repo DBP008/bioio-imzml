@@ -15,7 +15,7 @@ from bioio_imzml.tests.conftest import (
     continuous_expected,
     processed_expected,
 )
-from bioio_imzml.utils import tolerance_decimal_places
+from bioio_imzml.utils import parse_creation_date, tolerance_decimal_places
 
 ###############################################################################
 
@@ -54,6 +54,63 @@ def test_continuous_channel_names(continuous_imzml: Path) -> None:
 def test_continuous_delayed_matches_immediate(continuous_imzml: Path) -> None:
     reader = Reader(continuous_imzml)
     np.testing.assert_allclose(reader.dask_data.compute(), reader.data)
+
+
+def test_metadata_includes_imzml_metadata(continuous_imzml: Path) -> None:
+    reader = Reader(continuous_imzml)
+    metadata = reader.metadata
+
+    imzml_metadata = metadata["imzml_metadata"]
+    assert set(imzml_metadata.keys()) == {
+        "file_description",
+        "referenceable_param_groups",
+        "samples",
+        "softwares",
+        "scan_settings",
+        "instrument_configurations",
+        "data_processings",
+        "creation_date",
+    }
+
+
+def test_metadata_includes_reader_init_params(
+    continuous_imzml: Path, processed_imzml: Path
+) -> None:
+    default_reader = Reader(continuous_imzml)
+    assert default_reader.metadata["reader_init_params"] == {
+        "mz": None,
+        "mz_step": None,
+        "n_bins": 512,
+        "mz_tolerance_absolute": None,
+        "mz_tolerance_relative": None,
+        "is_continuous": True,
+    }
+
+    custom_reader = Reader(processed_imzml, mz_step=0.5, mz_tolerance_absolute=0.1)
+    assert custom_reader.metadata["reader_init_params"] == {
+        "mz": None,
+        "mz_step": 0.5,
+        "n_bins": 512,
+        "mz_tolerance_absolute": 0.1,
+        "mz_tolerance_relative": None,
+        "is_continuous": False,
+    }
+
+
+def test_standard_metadata_imaging_datetime_absent(continuous_imzml: Path) -> None:
+    # the writer used by the fixtures doesn't set <run startTimeStamp>
+    reader = Reader(continuous_imzml)
+    assert reader.standard_metadata.imaging_datetime is None
+
+
+def test_parse_creation_date() -> None:
+    from datetime import datetime
+
+    expected = datetime(2026, 4, 23, 12, 10, 2)
+    assert parse_creation_date(None) is None
+    assert parse_creation_date("not a date") is None
+    assert parse_creation_date("2026-04-23T12:10:02") == expected
+    assert parse_creation_date("4/23/2026 12:10:02 PM") == expected
 
 
 def test_processed_explicit_targets(processed_imzml: Path) -> None:
