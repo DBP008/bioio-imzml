@@ -32,6 +32,34 @@ def test_find_peaks_in_spectrum_synthetic() -> None:
     assert sorted(detected.tolist()) == pytest.approx(sorted(peak_centers), abs=0.5)
 
 
+def test_find_peaks_relative_separation_scales_with_mz() -> None:
+    # two peaks 0.02 apart at m/z ~500; the taller is at 500.00
+    mz_axis = np.arange(499.0, 501.0, 0.001)
+    intensity = 10.0 * np.exp(-0.5 * ((mz_axis - 500.00) / 0.002) ** 2)
+    intensity += 5.0 * np.exp(-0.5 * ((mz_axis - 500.02) / 0.002) ** 2)
+
+    both = find_peaks_in_spectrum(
+        mz_axis,
+        intensity,
+        snr_threshold=None,
+        min_relative_intensity=0.0,
+        min_separation_mz=0.001,
+    )
+    # 100 ppm at m/z 500 = 0.05 Da > 0.02 gap -> the weaker peak is merged away
+    merged = find_peaks_in_spectrum(
+        mz_axis,
+        intensity,
+        snr_threshold=None,
+        min_relative_intensity=0.0,
+        min_separation_mz=0.0,
+        min_separation_relative=1e-4,
+    )
+
+    assert len(both) == 2
+    assert len(merged) == 1
+    assert np.isclose(merged[0], 500.00, atol=0.005)  # the stronger peak survives
+
+
 def test_mean_spectrum_continuous(continuous_imzml: Path) -> None:
     mz_axis, mean_intensity = mean_spectrum(continuous_imzml)
 
@@ -79,7 +107,6 @@ def test_pixel_frequency_and_spatial_chaos_processed_mode_order(
 def test_auto_pick_peaks_filters_spatial_noise(spatial_imzml: Path) -> None:
     result = auto_pick_peaks(
         spatial_imzml,
-        min_separation_mz=1.0,
         min_pixel_frequency=0.05,
     )
 
@@ -92,7 +119,6 @@ def test_auto_pick_peaks_max_spatial_chaos_none_disables_filter(
 ) -> None:
     result = auto_pick_peaks(
         spatial_imzml,
-        min_separation_mz=1.0,
         min_pixel_frequency=0.01,  # below the noise peak's 1/64 frequency
         max_spatial_chaos=None,
     )
@@ -111,7 +137,6 @@ def test_auto_pick_peaks_no_quality_filters_skips_pixel_pass(
 ) -> None:
     result = auto_pick_peaks(
         spatial_imzml,
-        min_separation_mz=1.0,
         min_pixel_frequency=None,
         max_spatial_chaos=None,
     )

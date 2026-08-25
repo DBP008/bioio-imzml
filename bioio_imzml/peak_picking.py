@@ -7,6 +7,7 @@ from scipy.ndimage import uniform_filter
 from scipy.signal import find_peaks, savgol_filter
 
 from .reader import Reader
+from .utils import mz_tolerance_window
 
 ###############################################################################
 
@@ -20,7 +21,8 @@ def find_peaks_in_spectrum(
     savgol_polyorder: int = 2,
     snr_threshold: float | None = 3.0,
     min_relative_intensity: float = 0.005,
-    min_separation_mz: float = 0.5,
+    min_separation_mz: float | None = 0.5,
+    min_separation_relative: float | None = None,
 ) -> np.ndarray:
     """Candidate peak m/z values in a spectrum, sorted by descending intensity.
 
@@ -30,17 +32,23 @@ def find_peaks_in_spectrum(
     `snr_threshold` is a prominence threshold as a multiple of the spectrum's
     MAD noise floor, or `None` to disable prominence filtering entirely;
     `min_relative_intensity` is a height threshold as a fraction of the
-    spectrum's max; `min_separation_mz` is the minimum distance between two
-    accepted peaks, converted to samples using the median spacing of
-    `mz_axis`.
+    spectrum's max.
+
+    The minimum spacing between two accepted peaks is a per-peak window
+    `min_separation_mz + m/z * min_separation_relative` (via
+    `mz_tolerance_window`), so it can track instrument resolution rather than a
+    fixed Da gap -- pass `min_separation_relative` (a fraction, e.g. `5e-6` for
+    5 ppm) to make it scale with m/z. Enforced as a greedy pass: peaks are
+    walked from most to least intense and a candidate is dropped if a
+    stronger, already-kept peak lies within its window. With both components
+    `None`/0 the window is 0, so every local maximum passing the
+    height/prominence filters survives.
     """
     if smooth and len(intensity) > savgol_window:
         signal = savgol_filter(intensity, savgol_window, savgol_polyorder)
     else:
         signal = intensity
 
-    step = np.median(np.diff(mz_axis)) if len(mz_axis) > 1 else 1.0
-    distance = max(1, int(round(min_separation_mz / step)))
     prominence = None
     if snr_threshold is not None:
         noise_level = np.median(np.abs(signal - np.median(signal)))
@@ -50,11 +58,20 @@ def find_peaks_in_spectrum(
         signal,
         height=min_relative_intensity * np.max(signal),
         prominence=prominence,
-        distance=distance,
     )
 
-    order = np.argsort(signal[peak_indices])[::-1]
-    return mz_axis[peak_indices][order]
+    peak_mz = mz_axis[peak_indices]
+    order = np.argsort(signal[peak_indices])[::-1]  # descending intensity
+    gap = mz_tolerance_window(peak_mz, min_separation_mz, min_separation_relative)
+
+    kept: list[float] = []
+    # ponytail: O(n*k) greedy dedup; n is peak count (~1e3), swap for a sorted
+    # structure + bisect only if a spectrum ever yields far more candidates.
+    for i in order:
+        m = peak_mz[i]
+        if not kept or np.min(np.abs(np.asarray(kept) - m)) > gap[i]:
+            kept.append(m)
+    return np.asarray(kept, dtype=np.float64)
 
 
 def mean_spectrum(
@@ -205,7 +222,6 @@ def auto_pick_peaks(
     savgol_polyorder: int = 2,
     snr_threshold: float | None = None,
     min_relative_intensity: float = 0.0,
-    min_separation_mz: float = 0.5,
     min_pixel_frequency: float | None = 0.01,
     max_spatial_chaos: float | None = 0.4,
     top_n_peaks: int | None = None,
@@ -224,10 +240,22 @@ def auto_pick_peaks(
 
     Parameters mirror `mean_spectrum` (`min_mz`, `max_mz`, `bin_width`),
     `find_peaks_in_spectrum` (`smooth`, `savgol_window`, `savgol_polyorder`,
-    `snr_threshold`, `min_relative_intensity`, `min_separation_mz`), and
-    `Reader` (`mz_tolerance_absolute`, `mz_tolerance_relative`, `fs_kwargs`).
+    `snr_threshold`, `min_relative_intensity`), and `Reader`
+    (`mz_tolerance_absolute`, `mz_tolerance_relative`, `fs_kwargs`).
     `top_n_peaks` caps the number of channels returned after filtering
     (default: all of them).
+
+    `mz_tolerance_absolute`/`mz_tolerance_relative` do double duty: besides the
+    per-pixel frequency/chaos scoring window, they set the minimum spacing
+    between two detected candidates (via `find_peaks_in_spectrum`'s separation
+    args), so detection distinctness tracks instrument resolution (and grows
+    with m/z) rather than a fixed Da gap. With both `None`, no separation is
+    enforced and distinctness rests on the height/prominence filters alone
+    (like LipostarMSI, which has no separation control); the Reader's
+    neighbor-gap tolerance estimate can't stand in here, as it's derived from
+    the candidate list that detection is still producing. Call
+    `find_peaks_in_spectrum` directly for a separation independent of the
+    matching tolerance.
 
     Defaults mirror LipostarMSI's out-of-the-box peak selection: the SNR and
     relative-intensity filters ship disabled (`snr_threshold=None`,
@@ -261,6 +289,10 @@ def auto_pick_peaks(
     mean_mz, mean_intensity = mean_spectrum(
         image, min_mz=min_mz, max_mz=max_mz, bin_width=bin_width, fs_kwargs=fs_kwargs
     )
+    # The peak-separation window is the same abs+rel matching tolerance used
+    # downstream for extraction, so detection distinctness tracks instrument
+    # resolution (and grows with m/z) instead of a fixed Da gap. With both
+    # None, no separation is enforced (see docstring).
     candidates = find_peaks_in_spectrum(
         mean_mz,
         mean_intensity,
@@ -269,7 +301,8 @@ def auto_pick_peaks(
         savgol_polyorder=savgol_polyorder,
         snr_threshold=snr_threshold,
         min_relative_intensity=min_relative_intensity,
-        min_separation_mz=min_separation_mz,
+        min_separation_mz=mz_tolerance_absolute,
+        min_separation_relative=mz_tolerance_relative,
     )
 
     if len(candidates) == 0:

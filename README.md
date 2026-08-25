@@ -128,9 +128,16 @@ img = BioImage(
 )
 ```
 
-Tune detection sensitivity (`snr_threshold`, `min_relative_intensity`,
-`min_separation_mz`) and the quality filters (`min_pixel_frequency`,
-`max_spatial_chaos`) as keyword arguments; see the docstring for defaults.
+Tune detection sensitivity (`snr_threshold`, `min_relative_intensity`) and the
+quality filters (`min_pixel_frequency`, `max_spatial_chaos`) as keyword
+arguments; see the docstring for defaults. The minimum gap between detected
+candidates reuses `mz_tolerance_absolute`/`mz_tolerance_relative` (the same
+matching window used for extraction), so on high-resolution data it tracks
+instrument resolution (and grows with m/z) instead of a fixed Da value -- a
+fixed gap either merges genuinely distinct high-m/z peaks or over-splits one
+peak into several. For a separation independent of the matching tolerance, call
+`find_peaks_in_spectrum` directly (its `min_separation_mz`/
+`min_separation_relative` args).
 `snr_threshold`, `min_pixel_frequency`, and `max_spatial_chaos` each accept
 `None` to disable that filter -- passing `None` for both quality filters
 also skips the per-pixel pass over the file entirely (the slow part),
@@ -153,12 +160,11 @@ a candidate was dropped before committing to thresholds.
 | `savgol_polyorder` | `2` | Savitzky-Golay polynomial order. |
 | `snr_threshold` | `None` | Minimum signal-to-noise ratio; `None` disables the SNR filter. |
 | `min_relative_intensity` | `0.0` | Minimum intensity relative to the tallest peak. |
-| `min_separation_mz` | `0.5` | Minimum m/z gap between kept candidates. |
 | `min_pixel_frequency` | `0.01` | Minimum fraction of pixels with signal; `None` disables it. |
 | `max_spatial_chaos` | `0.4` | Maximum spatial chaos (0 structured .. 1 random); `None` disables it. Both quality filters `None` skips the slow per-pixel pass. |
 | `top_n_peaks` | `None` | Cap on channels returned after filtering (all if `None`). |
-| `mz_tolerance_absolute` | `None` | Absolute tolerance (m/z) for the per-pixel frequency/chaos scoring. |
-| `mz_tolerance_relative` | `None` | Relative tolerance (fraction) for the same; combines as `absolute + m/z * relative`. |
+| `mz_tolerance_absolute` | `None` | Absolute tolerance (m/z). Sets both the per-pixel frequency/chaos scoring window and the minimum gap between detected candidates. |
+| `mz_tolerance_relative` | `None` | Relative tolerance (fraction) for the same, combining as `absolute + m/z * relative`; makes the gap scale with m/z. Both `None` = no separation enforced during detection. |
 | `fs_kwargs` | `{}` | Extra kwargs forwarded to the underlying file reader. |
 
 ### `PeakPickingResult` attributes
