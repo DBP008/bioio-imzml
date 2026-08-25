@@ -140,6 +140,37 @@ leaving `result.pixel_frequency`/`result.spatial_chaos` as `NaN`.
 `pixel_frequency_and_spatial_chaos` -- to inspect intermediate results or why
 a candidate was dropped before committing to thresholds.
 
+### `auto_pick_peaks` parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `image` | *(required)* | Path to the imzML file. |
+| `min_mz` | `None` | Lower bound of the m/z range to scan (whole range if `None`). |
+| `max_mz` | `None` | Upper bound of the m/z range to scan (whole range if `None`). |
+| `bin_width` | `0.05` | Bin width (m/z) of the mean spectrum candidates are detected on. |
+| `smooth` | `True` | Apply Savitzky-Golay smoothing before detection (detection only; not applied to the returned raw spectrum). |
+| `savgol_window` | `7` | Savitzky-Golay window length; widen to suppress jagged/spurious candidates. |
+| `savgol_polyorder` | `2` | Savitzky-Golay polynomial order. |
+| `snr_threshold` | `None` | Minimum signal-to-noise ratio; `None` disables the SNR filter. |
+| `min_relative_intensity` | `0.0` | Minimum intensity relative to the tallest peak. |
+| `min_separation_mz` | `0.5` | Minimum m/z gap between kept candidates. |
+| `min_pixel_frequency` | `0.01` | Minimum fraction of pixels with signal; `None` disables it. |
+| `max_spatial_chaos` | `0.4` | Maximum spatial chaos (0 structured .. 1 random); `None` disables it. Both quality filters `None` skips the slow per-pixel pass. |
+| `top_n_peaks` | `None` | Cap on channels returned after filtering (all if `None`). |
+| `mz_tolerance_absolute` | `None` | Absolute tolerance (m/z) for the per-pixel frequency/chaos scoring. |
+| `mz_tolerance_relative` | `None` | Relative tolerance (fraction) for the same; combines as `absolute + m/z * relative`. |
+| `fs_kwargs` | `{}` | Extra kwargs forwarded to the underlying file reader. |
+
+### `PeakPickingResult` attributes
+
+| Attribute | Description |
+|-----------|-------------|
+| `mzs` | Candidate m/z values, sorted by descending mean-spectrum intensity. |
+| `pixel_frequency` | Fraction of pixels with signal, one per `mzs` (`NaN` if both quality filters disabled). |
+| `spatial_chaos` | Spatial chaos 0 (structured) .. 1 (random), one per `mzs` (`NaN` if both quality filters disabled). |
+| `mean_spectrum_mz` | m/z axis of the full (raw) mean spectrum candidates were detected from. |
+| `mean_spectrum_intensity` | Raw intensities of that mean spectrum. |
+
 ## Continuous vs. processed mode
 
 imzML stores spectra in one of two ways:

@@ -203,11 +203,11 @@ def auto_pick_peaks(
     smooth: bool = True,
     savgol_window: int = 7,
     savgol_polyorder: int = 2,
-    snr_threshold: float | None = 3.0,
-    min_relative_intensity: float = 0.005,
+    snr_threshold: float | None = None,
+    min_relative_intensity: float = 0.0,
     min_separation_mz: float = 0.5,
     min_pixel_frequency: float | None = 0.01,
-    max_spatial_chaos: float | None = 0.7,
+    max_spatial_chaos: float | None = 0.4,
     top_n_peaks: int | None = None,
     mz_tolerance_absolute: float | None = None,
     mz_tolerance_relative: float | None = None,
@@ -228,6 +228,13 @@ def auto_pick_peaks(
     `Reader` (`mz_tolerance_absolute`, `mz_tolerance_relative`, `fs_kwargs`).
     `top_n_peaks` caps the number of channels returned after filtering
     (default: all of them).
+
+    Defaults mirror LipostarMSI's out-of-the-box peak selection: the SNR and
+    relative-intensity filters ship disabled (`snr_threshold=None`,
+    `min_relative_intensity=0.0`), leaving the per-pixel frequency/chaos passes
+    to do the culling. `max_spatial_chaos=0.4` corresponds to LipostarMSI's
+    "min spatial chaos 0.6" under this module's opposite convention
+    (0 = structured, 1 = random).
 
     The mean spectrum this detects candidates on uses `mean_spectrum`'s
     default `mz_agg="sum"` (every measured peak within each bin summed, not
