@@ -1,3 +1,4 @@
+import warnings
 from typing import Any, Literal, NamedTuple
 
 import numpy as np
@@ -211,6 +212,72 @@ class PeakPickingResult(NamedTuple):
     mean_spectrum_intensity: np.ndarray
 
 
+def _warn_parameter_relations(
+    *,
+    bin_width: float,
+    rep_mz: float,
+    tol_abs: float | None,
+    tol_rel: float | None,
+    sep_abs: float,
+    sep_rel: float | None,
+    smooth: bool,
+    savgol_window: int,
+    savgol_polyorder: int,
+) -> None:
+    """Warn (never raise) when the three peak-picking windows violate the
+    physical ordering `bin_width <= mz_tol <= 0.5 * min_peak_separation`.
+
+    `mz_tol` is a half-width (integration window is `+/-tol`), so two peaks
+    closer than `2*tol` have overlapping extraction windows; `min_peak_
+    separation` (resolving power) should therefore be at least `2*tol`, and
+    `bin_width` (grid step) should be the finest of the three. Windows with a
+    relative component are compared at `rep_mz` so they become plain m/z
+    values. Tolerance checks are skipped when both tolerance components are
+    unset (the Reader then auto-estimates a data-dependent window we can't
+    compare here).
+    """
+    sep = sep_abs + rep_mz * (sep_rel or 0.0)
+    if bin_width >= sep:
+        warnings.warn(
+            f"min_peak_separation ({sep:.4g} m/z at m/z {rep_mz:.4g}) is not "
+            f"coarser than bin_width ({bin_width:.4g}); peaks can't be closer "
+            "than one grid step, so separation-based dedup does nothing. Raise "
+            "min_separation_* or lower bin_width.",
+            UserWarning,
+            stacklevel=3,
+        )
+
+    if tol_abs is not None or tol_rel is not None:
+        tol = (tol_abs or 0.0) + rep_mz * (tol_rel or 0.0)
+        if sep < 2 * tol:
+            warnings.warn(
+                f"min_peak_separation ({sep:.4g} m/z at m/z {rep_mz:.4g}) is "
+                f"smaller than the full extraction window 2*mz_tol "
+                f"({2 * tol:.4g}); accepted peaks can have overlapping +/-tol "
+                "windows and mz_agg='sum' will double-count intensity. Raise "
+                "min_separation_* to >= 2x the tolerance.",
+                UserWarning,
+                stacklevel=3,
+            )
+        if bin_width > tol:
+            warnings.warn(
+                f"bin_width ({bin_width:.4g}) is coarser than mz_tol "
+                f"({tol:.4g} m/z at m/z {rep_mz:.4g}); the detection grid "
+                "under-samples the extraction window. Lower bin_width to "
+                "<= the tolerance.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+    if smooth and (savgol_window % 2 == 0 or savgol_window <= savgol_polyorder):
+        warnings.warn(
+            f"savgol_window ({savgol_window}) must be odd and greater than "
+            f"savgol_polyorder ({savgol_polyorder}); smoothing will fail.",
+            UserWarning,
+            stacklevel=3,
+        )
+
+
 def auto_pick_peaks(
     image: types.PathLike,
     *,
@@ -227,6 +294,8 @@ def auto_pick_peaks(
     top_n_peaks: int | None = None,
     mz_tolerance_absolute: float | None = None,
     mz_tolerance_relative: float | None = None,
+    min_separation_absolute: float | None = None,
+    min_separation_relative: float | None = None,
     fs_kwargs: dict[str, Any] = {},
 ) -> PeakPickingResult:
     """Auto-detect m/z channels worth extracting from an imzML file.
@@ -240,22 +309,34 @@ def auto_pick_peaks(
 
     Parameters mirror `mean_spectrum` (`min_mz`, `max_mz`, `bin_width`),
     `find_peaks_in_spectrum` (`smooth`, `savgol_window`, `savgol_polyorder`,
-    `snr_threshold`, `min_relative_intensity`), and `Reader`
-    (`mz_tolerance_absolute`, `mz_tolerance_relative`, `fs_kwargs`).
+    `snr_threshold`, `min_relative_intensity`, `min_separation_absolute`/
+    `min_separation_relative` -- forwarded as its `min_separation_mz`/
+    `min_separation_relative`), and `Reader` (`mz_tolerance_absolute`,
+    `mz_tolerance_relative`, `fs_kwargs`).
     `top_n_peaks` caps the number of channels returned after filtering
     (default: all of them).
 
-    `mz_tolerance_absolute`/`mz_tolerance_relative` do double duty: besides the
-    per-pixel frequency/chaos scoring window, they set the minimum spacing
-    between two detected candidates (via `find_peaks_in_spectrum`'s separation
-    args), so detection distinctness tracks instrument resolution (and grows
-    with m/z) rather than a fixed Da gap. With both `None`, no separation is
-    enforced and distinctness rests on the height/prominence filters alone
-    (like LipostarMSI, which has no separation control); the Reader's
-    neighbor-gap tolerance estimate can't stand in here, as it's derived from
-    the candidate list that detection is still producing. Call
-    `find_peaks_in_spectrum` directly for a separation independent of the
-    matching tolerance.
+    Three independent m/z windows govern picking, and physically they should
+    satisfy `bin_width <= mz_tol <= 0.5 * min_peak_separation`:
+
+    * `bin_width` -- the mean-spectrum grid step (detection resolution).
+    * `mz_tolerance_absolute`/`mz_tolerance_relative` -- the extraction/scoring
+      window half-width `+/-tol` (mass accuracy), used both to build each
+      channel and to score per-pixel frequency/chaos.
+    * `min_separation_absolute`/`min_separation_relative` -- the minimum spacing
+      between two accepted candidates (instrument resolving power). Combined as
+      `absolute + m/z * relative` (via `mz_tolerance_window`), so it can grow
+      with m/z instead of being a fixed Da gap. When both are `None` it
+      defaults to `2 * bin_width` (a couple of grid samples apart), so dedup is
+      always enforced regardless of the extraction tolerance; pass `0` for both
+      to disable it (distinctness then rests on the height/prominence filters
+      alone, like LipostarMSI). This is deliberately decoupled from
+      `mz_tolerance_*`: setting separation equal to the half-width `tol` would
+      let two accepted peaks sit `tol` apart with 50%-overlapping extraction
+      windows and double-count intensity under `mz_agg="sum"`.
+
+    `_warn_parameter_relations` emits `UserWarning`s (never raises) when these
+    windows are set inconsistently.
 
     Defaults mirror LipostarMSI's out-of-the-box peak selection: the SNR and
     relative-intensity filters ship disabled (`snr_threshold=None`,
@@ -289,10 +370,26 @@ def auto_pick_peaks(
     mean_mz, mean_intensity = mean_spectrum(
         image, min_mz=min_mz, max_mz=max_mz, bin_width=bin_width, fs_kwargs=fs_kwargs
     )
-    # The peak-separation window is the same abs+rel matching tolerance used
-    # downstream for extraction, so detection distinctness tracks instrument
-    # resolution (and grows with m/z) instead of a fixed Da gap. With both
-    # None, no separation is enforced (see docstring).
+    # Peak separation (resolving power) is independent of the extraction
+    # tolerance (integration half-width) and of bin_width (grid step).
+    # ponytail: default gap = 2*bin_width -- "at least a couple grid samples
+    # apart"; instrument-agnostic and scales with bin_width. Tune per
+    # instrument (~ FWHM) if it merges real peaks or lets duplicates through.
+    sep_abs = min_separation_absolute
+    if sep_abs is None and min_separation_relative is None:
+        sep_abs = 2 * bin_width
+    if len(mean_mz) > 0:
+        _warn_parameter_relations(
+            bin_width=bin_width,
+            rep_mz=float(np.median(mean_mz)),
+            tol_abs=mz_tolerance_absolute,
+            tol_rel=mz_tolerance_relative,
+            sep_abs=sep_abs or 0.0,
+            sep_rel=min_separation_relative,
+            smooth=smooth,
+            savgol_window=savgol_window,
+            savgol_polyorder=savgol_polyorder,
+        )
     candidates = find_peaks_in_spectrum(
         mean_mz,
         mean_intensity,
@@ -301,8 +398,8 @@ def auto_pick_peaks(
         savgol_polyorder=savgol_polyorder,
         snr_threshold=snr_threshold,
         min_relative_intensity=min_relative_intensity,
-        min_separation_mz=mz_tolerance_absolute,
-        min_separation_relative=mz_tolerance_relative,
+        min_separation_mz=sep_abs,
+        min_separation_relative=min_separation_relative,
     )
 
     if len(candidates) == 0:

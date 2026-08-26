@@ -130,14 +130,24 @@ img = BioImage(
 
 Tune detection sensitivity (`snr_threshold`, `min_relative_intensity`) and the
 quality filters (`min_pixel_frequency`, `max_spatial_chaos`) as keyword
-arguments; see the docstring for defaults. The minimum gap between detected
-candidates reuses `mz_tolerance_absolute`/`mz_tolerance_relative` (the same
-matching window used for extraction), so on high-resolution data it tracks
-instrument resolution (and grows with m/z) instead of a fixed Da value -- a
-fixed gap either merges genuinely distinct high-m/z peaks or over-splits one
-peak into several. For a separation independent of the matching tolerance, call
-`find_peaks_in_spectrum` directly (its `min_separation_mz`/
-`min_separation_relative` args).
+arguments; see the docstring for defaults. Three independent m/z windows govern
+picking, and physically they should satisfy
+`bin_width <= mz_tolerance <= 0.5 * min_separation`:
+
+- `bin_width` -- the mean-spectrum grid step (detection resolution).
+- `mz_tolerance_absolute`/`mz_tolerance_relative` -- the extraction/scoring
+  window half-width `±tol` (mass accuracy).
+- `min_separation_absolute`/`min_separation_relative` -- the minimum gap
+  between two accepted candidates (instrument resolving power). Combined as
+  `absolute + m/z * relative`, so it can grow with m/z. Defaults to
+  `2 * bin_width` when both are unset, so dedup is always enforced; pass `0`
+  for both to disable it.
+
+Separation is deliberately decoupled from `mz_tolerance`: setting it equal to
+the half-width `tol` would let two accepted peaks sit `tol` apart with
+50%-overlapping extraction windows and double-count intensity under
+`mz_agg="sum"`. `auto_pick_peaks` emits a `UserWarning` (it never raises) when
+these windows are set inconsistently.
 `snr_threshold`, `min_pixel_frequency`, and `max_spatial_chaos` each accept
 `None` to disable that filter -- passing `None` for both quality filters
 also skips the per-pixel pass over the file entirely (the slow part),
@@ -163,8 +173,10 @@ a candidate was dropped before committing to thresholds.
 | `min_pixel_frequency` | `0.01` | Minimum fraction of pixels with signal; `None` disables it. |
 | `max_spatial_chaos` | `0.4` | Maximum spatial chaos (0 structured .. 1 random); `None` disables it. Both quality filters `None` skips the slow per-pixel pass. |
 | `top_n_peaks` | `None` | Cap on channels returned after filtering (all if `None`). |
-| `mz_tolerance_absolute` | `None` | Absolute tolerance (m/z). Sets both the per-pixel frequency/chaos scoring window and the minimum gap between detected candidates. |
-| `mz_tolerance_relative` | `None` | Relative tolerance (fraction) for the same, combining as `absolute + m/z * relative`; makes the gap scale with m/z. Both `None` = no separation enforced during detection. |
+| `mz_tolerance_absolute` | `None` | Absolute extraction/scoring window half-width (m/z), used to build each channel and score per-pixel frequency/chaos. |
+| `mz_tolerance_relative` | `None` | Relative component of the same window (fraction), combining as `absolute + m/z * relative`. |
+| `min_separation_absolute` | `None` | Absolute minimum gap between accepted candidates (m/z, resolving power). Both separation components `None` defaults to `2 * bin_width`; pass `0` for both to disable dedup. |
+| `min_separation_relative` | `None` | Relative component of the separation gap (fraction), combining as `absolute + m/z * relative`; makes the gap scale with m/z. |
 | `fs_kwargs` | `{}` | Extra kwargs forwarded to the underlying file reader. |
 
 ### `PeakPickingResult` attributes

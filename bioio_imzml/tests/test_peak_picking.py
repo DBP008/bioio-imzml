@@ -60,6 +60,63 @@ def test_find_peaks_relative_separation_scales_with_mz() -> None:
     assert np.isclose(merged[0], 500.00, atol=0.005)  # the stronger peak survives
 
 
+def test_min_separation_merges_close_peaks() -> None:
+    # two Gaussian peaks 1.0 m/z apart on a 0.05 grid; taller at 50.0
+    mz_axis = np.arange(48.0, 53.0, 0.05)
+    intensity = 10.0 * np.exp(-0.5 * ((mz_axis - 50.0) / 0.15) ** 2)
+    intensity += 5.0 * np.exp(-0.5 * ((mz_axis - 51.0) / 0.15) ** 2)
+
+    both = find_peaks_in_spectrum(
+        mz_axis, intensity, snr_threshold=None, min_separation_mz=0.0
+    )
+    merged = find_peaks_in_spectrum(
+        mz_axis, intensity, snr_threshold=None, min_separation_mz=2.0
+    )
+
+    assert len(both) == 2
+    assert len(merged) == 1
+    assert np.isclose(merged[0], 50.0, atol=0.05)  # stronger peak survives
+
+
+def test_auto_pick_peaks_separation_decoupled_from_tolerance(
+    spatial_imzml: Path,
+) -> None:
+    # spatial_imzml has two peaks (~200, ~250). Separation, not tolerance,
+    # controls candidate distinctness: a large tolerance with zero separation
+    # keeps both; a tiny tolerance with a wide separation merges to one.
+    fine = auto_pick_peaks(
+        spatial_imzml,
+        min_pixel_frequency=None,
+        max_spatial_chaos=None,
+        mz_tolerance_absolute=5.0,
+        min_separation_absolute=0.0,
+        min_separation_relative=0.0,
+    )
+    coarse = auto_pick_peaks(
+        spatial_imzml,
+        min_pixel_frequency=None,
+        max_spatial_chaos=None,
+        mz_tolerance_absolute=0.001,
+        min_separation_absolute=100.0,
+    )
+    assert len(fine.mzs) > len(coarse.mzs)
+
+
+def test_auto_pick_peaks_warns_on_overlapping_windows(
+    spatial_imzml: Path,
+) -> None:
+    # separation (1.0) < 2*tolerance (2*2.0=4.0) -> overlapping extraction
+    # windows / double-counting warning.
+    with pytest.warns(UserWarning, match="double-count"):
+        auto_pick_peaks(
+            spatial_imzml,
+            min_pixel_frequency=None,
+            max_spatial_chaos=None,
+            mz_tolerance_absolute=2.0,
+            min_separation_absolute=1.0,
+        )
+
+
 def test_mean_spectrum_continuous(continuous_imzml: Path) -> None:
     mz_axis, mean_intensity = mean_spectrum(continuous_imzml)
 
