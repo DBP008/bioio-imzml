@@ -77,6 +77,16 @@ class Reader(reader.Reader):
         window; "nearest" takes the closest measured peak's intensity
         instead, dropping the rest.
         Default: "sum"
+    add_tic: bool
+        If True, append one extra channel named "TIC" giving each pixel's
+        Total Ion Count -- the sum of every peak intensity in that pixel's
+        full raw spectrum (computed before channel extraction, so it captures
+        signal outside the m/z grid and signal dropped by tolerance windows,
+        unlike summing the extracted channels). Works the same in both
+        "continuous" and "processed" mode. Because TIC is a derived channel,
+        `channel_names` then has one more entry ("TIC") than `mz_values` /
+        `mz_tolerance`, which continue to describe only the m/z channels.
+        Default: False
     fs_kwargs: Dict[str, Any]
         Any specific keyword arguments to pass down to the fsspec created
         filesystem.
@@ -154,6 +164,7 @@ class Reader(reader.Reader):
         mz_tolerance_absolute: float | None = None,
         mz_tolerance_relative: float | None = None,
         mz_agg: Literal["nearest", "sum"] = "sum",
+        add_tic: bool = False,
         fs_kwargs: dict[str, Any] = {},
         **kwargs: Any,
     ):
@@ -218,6 +229,7 @@ class Reader(reader.Reader):
         self._mz_tolerance_absolute = mz_tolerance_absolute
         self._mz_tolerance_relative = mz_tolerance_relative
         self._mz_agg = mz_agg
+        self._add_tic = add_tic
         # Per-channel window used both for channel_names and to filter
         # nearest-neighbor matches in "processed" mode (see _read_row);
         # ignored for "continuous" mode, which reads its native axis exactly
@@ -239,6 +251,7 @@ class Reader(reader.Reader):
             "mz_tolerance_absolute": mz_tolerance_absolute,
             "mz_tolerance_relative": mz_tolerance_relative,
             "mz_agg": mz_agg,
+            "add_tic": add_tic,
             "is_continuous": self._continuous,
         }
         self._scenes: tuple[str, ...] = ("Image:0",)
@@ -320,9 +333,11 @@ class Reader(reader.Reader):
         continuous: bool,
         mz_tolerance: np.ndarray | None,
         mz_agg: Literal["nearest", "sum"],
+        add_tic: bool,
     ) -> np.ndarray:
         """One (channels, width) row: all pixels at a given (z, y)."""
-        out = np.zeros((len(mz_axis), width), dtype=np.float32)
+        n_mz = len(mz_axis)
+        out = np.zeros((n_mz + (1 if add_tic else 0), width), dtype=np.float32)
         if not pixels:
             return out
 
@@ -330,16 +345,18 @@ class Reader(reader.Reader):
             for x0, spectrum_index in pixels:
                 mzs, intensities = portable.read_spectrum_from_file(f, spectrum_index)
                 if continuous:
-                    out[:, x0] = intensities
+                    out[:n_mz, x0] = intensities
                 else:
-                    out[:, x0] = local_window_intensities(
+                    out[:n_mz, x0] = local_window_intensities(
                         mzs, intensities, mz_axis, mz_tolerance, mz_agg
                     )
+                if add_tic:
+                    out[n_mz, x0] = np.sum(intensities)
 
         return out
 
     def _create_dask_array(self) -> da.Array:
-        n_channels = len(self._mz_axis)
+        n_channels = len(self._mz_axis) + (1 if self._add_tic else 0)
         z_planes = []
         for z0 in range(self._depth):
             rows = [
@@ -354,6 +371,7 @@ class Reader(reader.Reader):
                         self._continuous,
                         self._mz_tolerance,
                         self._mz_agg,
+                        self._add_tic,
                     ),
                     shape=(n_channels, self._width),
                     dtype=np.float32,
@@ -372,6 +390,8 @@ class Reader(reader.Reader):
         for mz, tol in zip(self._mz_axis, self._mz_tolerance):
             decimals = tolerance_decimal_places(tol)
             names.append(f"{mz:.{decimals}f}±{tol:.{decimals}f}")
+        if self._add_tic:
+            names.append("TIC")
         coords = {dimensions.DimensionNames.Channel: names}
         # self._imzmldict (pixel/dimension counts, sizes) is deliberately not
         # spread in here -- pyimzml's own docs call it deprecated, and every
@@ -394,22 +414,30 @@ class Reader(reader.Reader):
         return self._to_data_array(self._create_dask_array())
 
     def _read_immediate(self) -> xr.DataArray:
+        n_mz = len(self._mz_axis)
         arr = np.zeros(
-            (len(self._mz_axis), self._depth, self._height, self._width),
+            (
+                n_mz + (1 if self._add_tic else 0),
+                self._depth,
+                self._height,
+                self._width,
+            ),
             dtype=np.float32,
         )
         with self._fs.open(self._ibd_path, "rb") as f:
             for i, (x, y, z) in enumerate(self._portable.coordinates):
                 mzs, intensities = self._portable.read_spectrum_from_file(f, i)
                 if self._continuous:
-                    arr[:, z - 1, y - 1, x - 1] = intensities
+                    arr[:n_mz, z - 1, y - 1, x - 1] = intensities
                 else:
-                    arr[:, z - 1, y - 1, x - 1] = local_window_intensities(
+                    arr[:n_mz, z - 1, y - 1, x - 1] = local_window_intensities(
                         mzs,
                         intensities,
                         self._mz_axis,
                         self._mz_tolerance,
                         self._mz_agg,
                     )
+                if self._add_tic:
+                    arr[n_mz, z - 1, y - 1, x - 1] = np.sum(intensities)
 
         return self._to_data_array(arr)

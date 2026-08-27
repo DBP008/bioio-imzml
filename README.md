@@ -28,7 +28,7 @@ img.data  # (T, C, Z, Y, X) numpy array
 ```
 
 imzML-specific options (`mz`, `mz_step`, `n_bins`, `mz_tolerance_absolute`,
-`mz_tolerance_relative`, `mz_agg`) work the same way through `BioImage`,
+`mz_tolerance_relative`, `mz_agg`, `add_tic`) work the same way through `BioImage`,
 since it forwards unrecognized keyword arguments straight to the reader.
 Pass `reader=bioio_imzml.Reader` to skip plugin auto-detection (useful when
 more than one installed plugin could claim the file):
@@ -74,7 +74,22 @@ img = BioImage("sample.imzML", reader=bioio_imzml.Reader, mz_step=0.1)
 img = BioImage(
     "sample.imzML", reader=bioio_imzml.Reader, mz=[798.54, 826.57], mz_agg="nearest"
 )
+
+# add_tic appends one extra channel named "TIC" (Total Ion Count): each pixel's
+# value is the sum of every peak in that pixel's full raw spectrum -- computed
+# before channel extraction, so it includes signal outside the target m/z grid
+# and signal dropped by tolerance windows (not the same as summing the
+# extracted channels). Works in both continuous and processed mode.
+img = BioImage(
+    "sample.imzML", reader=bioio_imzml.Reader, mz=[798.54, 826.57], add_tic=True
+)
+img.reader.channel_names  # [..., "TIC"] -- one more entry than mz_values
+tic = img.data[0, -1, 0]  # (Y, X) Total Ion Count map (last channel)
 ```
+
+`mz_values` and `mz_tolerance` keep describing only the m/z channels, so with
+`add_tic=True` the TIC channel is the extra trailing one and `channel_names`
+has one more entry than `mz_values`.
 
 ## Auto peak-picking
 

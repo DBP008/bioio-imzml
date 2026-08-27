@@ -88,6 +88,7 @@ def test_metadata_includes_reader_init_params(
         "mz_tolerance_absolute": None,
         "mz_tolerance_relative": None,
         "mz_agg": "sum",
+        "add_tic": False,
         "is_continuous": True,
     }
 
@@ -99,6 +100,7 @@ def test_metadata_includes_reader_init_params(
         "mz_tolerance_absolute": 0.1,
         "mz_tolerance_relative": None,
         "mz_agg": "sum",
+        "add_tic": False,
         "is_continuous": False,
     }
 
@@ -267,6 +269,57 @@ def test_processed_auto_step(processed_imzml: Path) -> None:
 
 def test_processed_delayed_matches_immediate(processed_imzml: Path) -> None:
     reader = Reader(processed_imzml, mz=PROCESSED_PEAK_CENTERS)
+    np.testing.assert_allclose(reader.dask_data.compute(), reader.data)
+
+
+def test_add_tic_default_off(continuous_imzml: Path) -> None:
+    # Default leaves channel count and names unchanged (no TIC).
+    reader = Reader(continuous_imzml)
+    assert reader.channel_names is not None
+    assert "TIC" not in reader.channel_names
+    assert reader.shape[1] == len(CONTINUOUS_MZ_AXIS)
+
+
+def test_continuous_add_tic(continuous_imzml: Path) -> None:
+    reader = Reader(continuous_imzml, add_tic=True)
+
+    # Exactly one extra channel, named "TIC", appended at the end.
+    assert reader.channel_names is not None
+    assert reader.channel_names[-1] == "TIC"
+    assert reader.shape[1] == len(CONTINUOUS_MZ_AXIS) + 1
+    assert len(reader.mz_values) == len(CONTINUOUS_MZ_AXIS)  # unchanged
+
+    data = reader.data  # (T, C, Z, Y, X)
+    for y in range(CONTINUOUS_HEIGHT):
+        for x in range(CONTINUOUS_WIDTH):
+            pixel_id = y * CONTINUOUS_WIDTH + x
+            # TIC == sum of the raw spectrum; for continuous data the channels
+            # are the native axis, so that equals the sum over m/z channels.
+            expected = continuous_expected(pixel_id).sum()
+            np.testing.assert_allclose(data[0, -1, 0, y, x], expected)
+            np.testing.assert_allclose(
+                data[0, :-1, 0, y, x].sum(), data[0, -1, 0, y, x]
+            )
+
+
+def test_processed_add_tic_uses_raw_spectrum(processed_imzml: Path) -> None:
+    # Only extract one of the two peaks: TIC must still sum the full raw
+    # spectrum (both peaks), not just the extracted channel.
+    reader = Reader(processed_imzml, mz=PROCESSED_PEAK_CENTERS[:1], add_tic=True)
+    assert reader.channel_names is not None
+    assert reader.channel_names[-1] == "TIC"
+    assert reader.shape[1] == 2  # one m/z channel + TIC
+
+    data = reader.data
+    for y in range(PROCESSED_HEIGHT):
+        for x in range(PROCESSED_WIDTH):
+            pixel_id = y * PROCESSED_WIDTH + x
+            expected = processed_expected(pixel_id).sum()  # both raw peaks
+            np.testing.assert_allclose(data[0, -1, 0, y, x], expected)
+
+
+def test_add_tic_delayed_matches_immediate(processed_imzml: Path) -> None:
+    reader = Reader(processed_imzml, mz=PROCESSED_PEAK_CENTERS, add_tic=True)
     np.testing.assert_allclose(reader.dask_data.compute(), reader.data)
 
 
