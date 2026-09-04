@@ -100,12 +100,24 @@ def mean_spectrum(
     -------
     mz_axis, mean_intensity : np.ndarray
     """
-    reader = Reader(image, mz_step=bin_width, mz_agg=mz_agg, fs_kwargs=fs_kwargs)
+    # With both bounds known, build the grid in-window so a "processed" mode
+    # Reader only matches channels in [min_mz, max_mz], not over the file's
+    # full native span. The post-slice below still covers the single-bound
+    # case, continuous mode, and the arange overshoot past max_mz.
+    if min_mz is not None and max_mz is not None:
+        targets = np.arange(min_mz, max_mz + bin_width, bin_width)
+        reader = Reader(image, mz=targets, mz_agg=mz_agg, fs_kwargs=fs_kwargs)
+    else:
+        reader = Reader(image, mz_step=bin_width, mz_agg=mz_agg, fs_kwargs=fs_kwargs)
     mz_axis = reader.mz_values
+    # dask-backed: .mean() reduces one row chunk at a time rather than
+    # materializing the full (C, Z, Y, X) cube (>1 TiB at fine bin_width).
     non_channel_dims = [
-        d for d in reader.xarray_data.dims if d != dimensions.DimensionNames.Channel
+        d
+        for d in reader.xarray_dask_data.dims
+        if d != dimensions.DimensionNames.Channel
     ]
-    mean_intensity = reader.xarray_data.mean(dim=non_channel_dims).values.astype(
+    mean_intensity = reader.xarray_dask_data.mean(dim=non_channel_dims).values.astype(
         np.float64
     )
 
@@ -125,10 +137,14 @@ def pixel_frequency_and_spatial_chaos(
     mz_tolerance_absolute: float | None = None,
     mz_tolerance_relative: float | None = None,
     presence_threshold: float = 1e-3,
+    block_bytes: float = 256e6,
     fs_kwargs: dict[str, Any] = {},
 ) -> tuple[np.ndarray, np.ndarray]:
     """Per-candidate `(pixel_frequency, spatial_chaos)`, one value per entry
     in `candidate_mzs` (no filtering applied here -- see `auto_pick_peaks`).
+
+    `block_bytes` caps the float64 working set of the channel loop (~256MB by
+    default); lower it only on a tight machine.
 
     Extracts ion images for every candidate at once via `Reader`'s existing
     lazy channel extraction (one pass over the file), instead of re-parsing
@@ -151,48 +167,59 @@ def pixel_frequency_and_spatial_chaos(
         fs_kwargs=fs_kwargs,
     )
     channel_dim = dimensions.DimensionNames.Channel
-    xarr = reader.xarray_data
-    # `reader.mz_values` is never `candidate_mzs` in its original order: a
-    # "continuous" mode Reader ignores `mz=` and exposes its own native axis
-    # instead, and a "processed" mode Reader sorts `mz` ascending internally
-    # (see `Reader.__init__`) while `candidate_mzs` normally comes in
-    # descending-intensity order from `find_peaks_in_spectrum`. Realign the
-    # channel axis to `candidate_mzs`' order either way -- exact match for
-    # "processed" (the values are the same, just reordered), nearest match
-    # for "continuous" (safe: `candidate_mzs` came from this same native axis
-    # via `mean_spectrum`/`find_peaks_in_spectrum`, no resampling in between).
+    spatial_dims = (
+        dimensions.DimensionNames.SpatialY,
+        dimensions.DimensionNames.SpatialX,
+    )
+    xarr = reader.xarray_dask_data
+    # Realign the channel axis to `candidate_mzs`' order: a "continuous" Reader
+    # exposes its own native axis and a "processed" one sorts `mz` ascending,
+    # so neither keeps the descending-intensity order from
+    # `find_peaks_in_spectrum`. Nearest-match is safe -- `candidate_mzs` came
+    # from this same axis via `mean_spectrum`, no resampling in between.
     idx = np.searchsorted(reader.mz_values, candidate_mzs)
     idx = np.clip(idx, 0, len(reader.mz_values) - 1)
-    xarr = xarr.isel({channel_dim: idx}).astype(np.float64)
+    xarr = xarr.isel({channel_dim: idx})
 
     non_channel_dims = [d for d in xarr.dims if d != channel_dim]
     n_pixels = int(np.prod([xarr.sizes[d] for d in non_channel_dims]))
 
-    peak = xarr.max(dim=non_channel_dims)  # (C,)
-    has_signal = peak > 0
-    pixel_frequency = (
-        (xarr > peak * presence_threshold).sum(dim=non_channel_dims) / n_pixels
-    ).where(has_signal, 0.0)
+    # Process channels in memory-bounded blocks: with the intensity/SNR filters
+    # off by default candidates can run to tens of thousands, and the dense
+    # float64 cube plus its working copies would OOM. Each candidate is
+    # independent and uniform_filter is size-1 on the channel axis, so blocking
+    # never changes the result.
+    batch = max(1, int(block_bytes // (n_pixels * 8)))
+    freqs, chaoses = [], []
+    for start in range(0, xarr.sizes[channel_dim], batch):
+        block = (
+            xarr.isel({channel_dim: slice(start, start + batch)})
+            .astype(np.float64)
+            .compute()
+        )
+        peak = block.max(dim=non_channel_dims)  # (C,)
+        has_signal = peak > 0
+        freqs.append(
+            ((block > peak * presence_threshold).sum(dim=non_channel_dims) / n_pixels)
+            .where(has_signal, 0.0)
+            .values
+        )
+        # smooth only the spatial axes -- box size 1 elsewhere is a no-op
+        norm = block / peak.where(has_signal, 1.0)
+        smooth_size = tuple(3 if d in spatial_dims else 1 for d in block.dims)
+        diff = xr.DataArray(
+            np.abs(norm.data - uniform_filter(norm.data, size=smooth_size)),
+            dims=block.dims,
+            coords=block.coords,
+        )
+        chaoses.append(
+            (diff.mean(dim=non_channel_dims) / (norm.mean(dim=non_channel_dims) + 1e-6))
+            .clip(0.0, 1.0)
+            .where(has_signal, 1.0)
+            .values
+        )
 
-    # smooth only the spatial (Y, X) axes -- box size 1 elsewhere is a no-op
-    norm = xarr / peak.where(has_signal, 1.0)
-    smooth_size = tuple(
-        3
-        if d in (dimensions.DimensionNames.SpatialY, dimensions.DimensionNames.SpatialX)
-        else 1
-        for d in xarr.dims
-    )
-    smoothed = uniform_filter(norm.data, size=smooth_size)
-    diff = xr.DataArray(
-        np.abs(norm.data - smoothed), dims=xarr.dims, coords=xarr.coords
-    )
-
-    spatial_chaos = (
-        diff.mean(dim=non_channel_dims) / (norm.mean(dim=non_channel_dims) + 1e-6)
-    ).clip(0.0, 1.0)
-    spatial_chaos = spatial_chaos.where(has_signal, 1.0)
-
-    return pixel_frequency.values, spatial_chaos.values
+    return np.concatenate(freqs), np.concatenate(chaoses)
 
 
 class PeakPickingResult(NamedTuple):
@@ -210,72 +237,6 @@ class PeakPickingResult(NamedTuple):
     spatial_chaos: np.ndarray
     mean_spectrum_mz: np.ndarray
     mean_spectrum_intensity: np.ndarray
-
-
-def _warn_parameter_relations(
-    *,
-    bin_width: float,
-    rep_mz: float,
-    tol_abs: float | None,
-    tol_rel: float | None,
-    sep_abs: float,
-    sep_rel: float | None,
-    smooth: bool,
-    savgol_window: int,
-    savgol_polyorder: int,
-) -> None:
-    """Warn (never raise) when the three peak-picking windows violate the
-    physical ordering `bin_width <= mz_tol <= 0.5 * min_peak_separation`.
-
-    `mz_tol` is a half-width (integration window is `+/-tol`), so two peaks
-    closer than `2*tol` have overlapping extraction windows; `min_peak_
-    separation` (resolving power) should therefore be at least `2*tol`, and
-    `bin_width` (grid step) should be the finest of the three. Windows with a
-    relative component are compared at `rep_mz` so they become plain m/z
-    values. Tolerance checks are skipped when both tolerance components are
-    unset (the Reader then auto-estimates a data-dependent window we can't
-    compare here).
-    """
-    sep = sep_abs + rep_mz * (sep_rel or 0.0)
-    if bin_width >= sep:
-        warnings.warn(
-            f"min_peak_separation ({sep:.4g} m/z at m/z {rep_mz:.4g}) is not "
-            f"coarser than bin_width ({bin_width:.4g}); peaks can't be closer "
-            "than one grid step, so separation-based dedup does nothing. Raise "
-            "min_separation_* or lower bin_width.",
-            UserWarning,
-            stacklevel=3,
-        )
-
-    if tol_abs is not None or tol_rel is not None:
-        tol = (tol_abs or 0.0) + rep_mz * (tol_rel or 0.0)
-        if sep < 2 * tol:
-            warnings.warn(
-                f"min_peak_separation ({sep:.4g} m/z at m/z {rep_mz:.4g}) is "
-                f"smaller than the full extraction window 2*mz_tol "
-                f"({2 * tol:.4g}); accepted peaks can have overlapping +/-tol "
-                "windows and mz_agg='sum' will double-count intensity. Raise "
-                "min_separation_* to >= 2x the tolerance.",
-                UserWarning,
-                stacklevel=3,
-            )
-        if bin_width > tol:
-            warnings.warn(
-                f"bin_width ({bin_width:.4g}) is coarser than mz_tol "
-                f"({tol:.4g} m/z at m/z {rep_mz:.4g}); the detection grid "
-                "under-samples the extraction window. Lower bin_width to "
-                "<= the tolerance.",
-                UserWarning,
-                stacklevel=3,
-            )
-
-    if smooth and (savgol_window % 2 == 0 or savgol_window <= savgol_polyorder):
-        warnings.warn(
-            f"savgol_window ({savgol_window}) must be odd and greater than "
-            f"savgol_polyorder ({savgol_polyorder}); smoothing will fail.",
-            UserWarning,
-            stacklevel=3,
-        )
 
 
 def auto_pick_peaks(
@@ -335,8 +296,9 @@ def auto_pick_peaks(
       let two accepted peaks sit `tol` apart with 50%-overlapping extraction
       windows and double-count intensity under `mz_agg="sum"`.
 
-    `_warn_parameter_relations` emits `UserWarning`s (never raises) when these
-    windows are set inconsistently.
+    A `UserWarning` (never an error) is emitted when `min_peak_separation`
+    comes out tighter than `2 * mz_tol`, the case that double-counts intensity
+    under `mz_agg="sum"`.
 
     Defaults mirror LipostarMSI's out-of-the-box peak selection: the SNR and
     relative-intensity filters ship disabled (`snr_threshold=None`,
@@ -370,26 +332,31 @@ def auto_pick_peaks(
     mean_mz, mean_intensity = mean_spectrum(
         image, min_mz=min_mz, max_mz=max_mz, bin_width=bin_width, fs_kwargs=fs_kwargs
     )
-    # Peak separation (resolving power) is independent of the extraction
-    # tolerance (integration half-width) and of bin_width (grid step).
-    # ponytail: default gap = 2*bin_width -- "at least a couple grid samples
-    # apart"; instrument-agnostic and scales with bin_width. Tune per
-    # instrument (~ FWHM) if it merges real peaks or lets duplicates through.
+    # ponytail: default separation = 2*bin_width (a couple grid samples apart);
+    # instrument-agnostic. Tune per instrument (~FWHM) if it merges real peaks
+    # or lets duplicates through.
     sep_abs = min_separation_absolute
     if sep_abs is None and min_separation_relative is None:
         sep_abs = 2 * bin_width
-    if len(mean_mz) > 0:
-        _warn_parameter_relations(
-            bin_width=bin_width,
-            rep_mz=float(np.median(mean_mz)),
-            tol_abs=mz_tolerance_absolute,
-            tol_rel=mz_tolerance_relative,
-            sep_abs=sep_abs or 0.0,
-            sep_rel=min_separation_relative,
-            smooth=smooth,
-            savgol_window=savgol_window,
-            savgol_polyorder=savgol_polyorder,
-        )
+    # Warn (never raise) when peak separation ends up tighter than the full
+    # extraction window: accepted peaks then have overlapping ±tol windows and
+    # mz_agg="sum" double-counts their shared intensity.
+    if len(mean_mz) > 0 and (
+        mz_tolerance_absolute is not None or mz_tolerance_relative is not None
+    ):
+        rep_mz = float(np.median(mean_mz))
+        tol = (mz_tolerance_absolute or 0.0) + rep_mz * (mz_tolerance_relative or 0.0)
+        sep = (sep_abs or 0.0) + rep_mz * (min_separation_relative or 0.0)
+        if sep < 2 * tol:
+            warnings.warn(
+                f"min_peak_separation ({sep:.4g} m/z at m/z {rep_mz:.4g}) is "
+                f"smaller than the full extraction window 2*mz_tol ({2 * tol:.4g}); "
+                "accepted peaks can have overlapping ±tol windows and "
+                "mz_agg='sum' will double-count intensity. Raise "
+                "min_separation_* to >= 2x the tolerance.",
+                UserWarning,
+                stacklevel=2,
+            )
     candidates = find_peaks_in_spectrum(
         mean_mz,
         mean_intensity,

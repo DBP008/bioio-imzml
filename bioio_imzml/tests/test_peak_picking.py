@@ -88,15 +88,15 @@ def test_auto_pick_peaks_separation_decoupled_from_tolerance(
         spatial_imzml,
         min_pixel_frequency=None,
         max_spatial_chaos=None,
-        mz_tolerance_absolute=5.0,
-        min_separation_absolute=0.0,
+        mz_tolerance_absolute=0.5,
+        min_separation_absolute=2.0,
         min_separation_relative=0.0,
     )
     coarse = auto_pick_peaks(
         spatial_imzml,
         min_pixel_frequency=None,
         max_spatial_chaos=None,
-        mz_tolerance_absolute=0.001,
+        mz_tolerance_absolute=0.5,
         min_separation_absolute=100.0,
     )
     assert len(fine.mzs) > len(coarse.mzs)
@@ -126,6 +126,18 @@ def test_mean_spectrum_continuous(continuous_imzml: Path) -> None:
     np.testing.assert_allclose(mean_intensity, expected)
 
 
+def test_mean_spectrum_bounds_narrow_grid(processed_imzml: Path) -> None:
+    # Both bounds given -> the grid is generated in-window (starts exactly at
+    # min_mz, stepped by bin_width), not built over the file's native span and
+    # sliced. Fixture peaks sit at ~150 and ~250; window excludes the 150 peak.
+    mz_axis, _ = mean_spectrum(
+        processed_imzml, min_mz=200.0, max_mz=250.0, bin_width=1.0
+    )
+    assert mz_axis[0] == pytest.approx(200.0)
+    assert mz_axis[-1] <= 250.0
+    np.testing.assert_allclose(np.diff(mz_axis), 1.0)
+
+
 def test_pixel_frequency_and_spatial_chaos_distinguish_noise(
     spatial_imzml: Path,
 ) -> None:
@@ -140,6 +152,25 @@ def test_pixel_frequency_and_spatial_chaos_distinguish_noise(
     assert frequency[real_idx] == pytest.approx(0.5, abs=1e-6)
     assert frequency[noise_idx] == pytest.approx(1.0 / 64.0, abs=1e-6)
     assert chaos[noise_idx] > chaos[real_idx]
+
+
+def test_pixel_frequency_and_spatial_chaos_batching_is_value_neutral(
+    spatial_imzml: Path,
+) -> None:
+    # The channel axis is processed in memory-bounded blocks; forcing batch=1
+    # via a tiny block_bytes must match the single-block default (candidates are
+    # independent; uniform_filter is size-1 on the channel axis).
+    mz_axis, intensity = mean_spectrum(spatial_imzml)
+    candidates = find_peaks_in_spectrum(mz_axis, intensity, min_separation_mz=1.0)
+
+    freq_full, chaos_full = pixel_frequency_and_spatial_chaos(spatial_imzml, candidates)
+    freq_batched, chaos_batched = pixel_frequency_and_spatial_chaos(
+        spatial_imzml, candidates, block_bytes=1.0
+    )
+
+    assert len(candidates) > 1  # otherwise batching isn't exercised
+    np.testing.assert_allclose(freq_batched, freq_full)
+    np.testing.assert_allclose(chaos_batched, chaos_full)
 
 
 def test_pixel_frequency_and_spatial_chaos_processed_mode_order(

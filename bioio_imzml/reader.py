@@ -230,10 +230,8 @@ class Reader(reader.Reader):
         self._mz_tolerance_relative = mz_tolerance_relative
         self._mz_agg = mz_agg
         self._add_tic = add_tic
-        # Per-channel window used both for channel_names and to filter
-        # nearest-neighbor matches in "processed" mode (see _read_row);
-        # ignored for "continuous" mode, which reads its native axis exactly
-        # regardless.
+        # Per-channel window for channel_names and "processed" mode matching
+        # (see _read_row); "continuous" mode reads its native axis exactly.
         if mz_tolerance_absolute is None and mz_tolerance_relative is None:
             self._mz_tolerance = (
                 np.zeros(len(self._mz_axis), dtype=np.float64)
@@ -414,30 +412,4 @@ class Reader(reader.Reader):
         return self._to_data_array(self._create_dask_array())
 
     def _read_immediate(self) -> xr.DataArray:
-        n_mz = len(self._mz_axis)
-        arr = np.zeros(
-            (
-                n_mz + (1 if self._add_tic else 0),
-                self._depth,
-                self._height,
-                self._width,
-            ),
-            dtype=np.float32,
-        )
-        with self._fs.open(self._ibd_path, "rb") as f:
-            for i, (x, y, z) in enumerate(self._portable.coordinates):
-                mzs, intensities = self._portable.read_spectrum_from_file(f, i)
-                if self._continuous:
-                    arr[:n_mz, z - 1, y - 1, x - 1] = intensities
-                else:
-                    arr[:n_mz, z - 1, y - 1, x - 1] = local_window_intensities(
-                        mzs,
-                        intensities,
-                        self._mz_axis,
-                        self._mz_tolerance,
-                        self._mz_agg,
-                    )
-                if self._add_tic:
-                    arr[n_mz, z - 1, y - 1, x - 1] = np.sum(intensities)
-
-        return self._to_data_array(arr)
+        return self._to_data_array(self._create_dask_array().compute())

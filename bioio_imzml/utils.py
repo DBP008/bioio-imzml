@@ -83,12 +83,8 @@ def mz_tolerance_window(
     `relative=3e-6`. Either component may be None (treated as 0); with both
     None every value is 0.
     """
-    tolerance = np.zeros(len(mz_axis), dtype=np.float64)
-    if absolute is not None:
-        tolerance += absolute
-    if relative is not None:
-        tolerance += mz_axis * relative
-    return tolerance
+    mz_axis = np.asarray(mz_axis, dtype=np.float64)
+    return (absolute or 0.0) + mz_axis * (relative or 0.0)
 
 
 def estimate_mz_tolerance(mz_axis: np.ndarray) -> np.ndarray:
